@@ -1,9 +1,13 @@
-import discord
 import os
 import sys
+from dotenv import load_dotenv
+
+# Carrega as variáveis de ambiente antes de qualquer outro import local
+load_dotenv()
+
+import discord
 import asyncio
 from discord.ext import commands, tasks
-from dotenv import load_dotenv
 from aiohttp import web
 
 # Adiciona a pasta src ao path para os imports funcionarem de qualquer lugar
@@ -13,7 +17,6 @@ from database import init_db, save_user, get_user, get_all_users, match_exists, 
 from valorant_api import fetch_player_matches, fetch_mmr, fetch_leaderboard, fetch_store_featured, get_crosshair_url
 from processor import calculate_metrics
 
-load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # Servidor Web simples para manter o bot online (Render/UptimeRobot)

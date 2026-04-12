@@ -3,65 +3,70 @@ import json
 import os
 from datetime import datetime, timedelta
 
-DATABASE_URL = os.getenv('DATABASE_URL')
-
 def get_connection():
-    return psycopg2.connect(DATABASE_URL)
+    url = os.getenv('DATABASE_URL')
+    if not url:
+        raise ValueError("❌ ERRO: Variável DATABASE_URL não encontrada no ambiente!")
+    return psycopg2.connect(url)
 
 def init_db():
-    conn = get_connection()
-    cursor = conn.cursor()
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-    # Tabela de Usuários Monitorados
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-        riot_id TEXT,
-        tagline TEXT,
-        discord_id TEXT,
-        puuid TEXT,
-        region TEXT DEFAULT 'latam',
-        PRIMARY KEY (riot_id, tagline)
-    )''')
+        # Tabela de Usuários Monitorados
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+            riot_id TEXT,
+            tagline TEXT,
+            discord_id TEXT,
+            puuid TEXT,
+            region TEXT DEFAULT 'latam',
+            PRIMARY KEY (riot_id, tagline)
+        )''')
 
-    # Cache temporário para evitar 429 (TTL 5-10min)
-    cursor.execute('''CREATE TABLE IF NOT EXISTS cache_telemetry (
-        riot_id_tag TEXT PRIMARY KEY,
-        last_updated TEXT,
-        payload_json TEXT NOT NULL
-    )''')
+        # Cache temporário para evitar 429 (TTL 5-10min)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS cache_telemetry (
+            riot_id_tag TEXT PRIMARY KEY,
+            last_updated TEXT,
+            payload_json TEXT NOT NULL
+        )''')
 
-    # Histórico persistente de partidas para análise Data-Driven
-    cursor.execute('''CREATE TABLE IF NOT EXISTS matches (
-        match_id TEXT PRIMARY KEY,
-        map TEXT,
-        mode TEXT,
-        match_start BIGINT,
-        rounds_played INTEGER,
-        data_json TEXT NOT NULL
-    )''')
+        # Histórico persistente de partidas para análise Data-Driven
+        cursor.execute('''CREATE TABLE IF NOT EXISTS matches (
+            match_id TEXT PRIMARY KEY,
+            map TEXT,
+            mode TEXT,
+            match_start BIGINT,
+            rounds_played INTEGER,
+            data_json TEXT NOT NULL
+        )''')
 
-    # Estatísticas individuais por partida (facilitando queries de ADR, KAST)
-    cursor.execute('''CREATE TABLE IF NOT EXISTS player_match_stats (
-        match_id TEXT,
-        puuid TEXT,
-        riot_id_tag TEXT,
-        agent TEXT,
-        kills INTEGER,
-        deaths INTEGER,
-        assists INTEGER,
-        damage_made INTEGER,
-        score INTEGER,
-        was_win INTEGER,
-        PRIMARY KEY (match_id, puuid)
-    )''')
+        # Estatísticas individuais por partida (facilitando queries de ADR, KAST)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS player_match_stats (
+            match_id TEXT,
+            puuid TEXT,
+            riot_id_tag TEXT,
+            agent TEXT,
+            kills INTEGER,
+            deaths INTEGER,
+            assists INTEGER,
+            damage_made INTEGER,
+            score INTEGER,
+            was_win INTEGER,
+            PRIMARY KEY (match_id, puuid)
+        )''')
 
-    # Configurações do bot (ex: canal de notificações)
-    cursor.execute('''CREATE TABLE IF NOT EXISTS bot_config (
-        key TEXT PRIMARY KEY,
-        value TEXT
-    )''')
+        # Configurações do bot (ex: canal de notificações)
+        cursor.execute('''CREATE TABLE IF NOT EXISTS bot_config (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )''')
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Falha crítica ao inicializar banco: {e}")
+        raise e
 
 def set_config(key, value):
     conn = get_connection()
