@@ -2,25 +2,26 @@ import discord
 import os
 import sys
 import asyncio
-import sqlite3
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+from aiohttp import web
 
 # Adiciona a pasta src ao path para os imports funcionarem de qualquer lugar
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from database import init_db, save_user, get_user, get_all_users, match_exists, save_match_data, set_config, get_config, remove_user, DB_FILE
+from database import init_db, save_user, get_user, get_all_users, match_exists, save_match_data, set_config, get_config, remove_user, get_connection
 from valorant_api import fetch_player_matches, fetch_mmr, fetch_leaderboard, fetch_store_featured, get_crosshair_url
 from processor import calculate_metrics
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Garante que a pasta data existe na raiz do projeto
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, 'data')
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
+# Servidor Web simples para manter o bot online (Render/UptimeRobot)
+async def handle(request):
+    return web.Response(text="Bot is alive and monitoring!")
+
+app = web.Application()
+app.router.add_get("/", handle)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -234,13 +235,13 @@ async def mapas(ctx, name_tag: str):
         await ctx.send("Use Nome#Tag")
         return
         
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT m.map, COUNT(*), SUM(p.was_win)
         FROM player_match_stats p
         JOIN matches m ON p.match_id = m.match_id
-        WHERE p.riot_id_tag LIKE ?
+        WHERE p.riot_id_tag LIKE %s
         GROUP BY m.map
     ''', (f"{name_tag}%",))
     
@@ -364,12 +365,12 @@ async def analise(ctx, name_tag: str):
         await ctx.send("Use Nome#Tag")
         return
         
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT agent, kills, deaths, assists, damage_made, was_win 
         FROM player_match_stats 
-        WHERE riot_id_tag LIKE ?
+        WHERE riot_id_tag LIKE %s
     ''', (f"{name_tag}%",))
     
     rows = cursor.fetchall()
@@ -422,8 +423,24 @@ async def mira(ctx, codigo: str):
     embed.set_image(url=url)
     await ctx.send(embed=embed)
 
+async def main():
+    # Inicia o servidor web
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Servidor Web rodando na porta {port}")
+    
+    # Inicia o bot
+    async with bot:
+        await bot.start(TOKEN)
+
 if __name__ == '__main__':
     if not TOKEN:
-        print("ERRO: TOKEN não encontrado.")
+        print("ERRO: DISCORD_TOKEN não encontrado.")
     else:
-        bot.run(TOKEN)
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            pass
