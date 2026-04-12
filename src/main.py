@@ -164,32 +164,30 @@ async def main():
         logger.error(f"❌ Erro Web: {e}")
 
     # Loop de Conexão Discord (Anti-429)
-    retries = 0
-    while True:
-        try:
-            if not TOKEN:
-                logger.error("❌ DISCORD_TOKEN não encontrado!")
-                await asyncio.sleep(60)
-                continue
-                
-            logger.info(f"⏳ Tentando conectar ao Discord (Tentativa {retries + 1})...")
-            async with bot:
-                await bot.start(TOKEN)
-        except discord.errors.LoginFailure:
-            logger.error("❌ Erro de Login: Token Inválido! Verifique seu DISCORD_TOKEN.")
-            await asyncio.sleep(60)
-        except discord.errors.HTTPException as e:
-            if e.status == 429:
-                wait = random.randint(60, 180) + (retries * 60)
-                logger.warning(f"⚠️ RATE LIMIT (IP Bloqueado pelo Discord). Aguardando {wait}s...")
-                await asyncio.sleep(wait)
-                retries += 1
-            else:
-                logger.error(f"❌ Erro HTTP Discord: {e}")
-                await asyncio.sleep(60)
-        except Exception as e:
-            logger.error(f"❌ Erro Fatal no Loop do Bot: {e}", exc_info=True)
-            await asyncio.sleep(60)
+    try:
+        if not TOKEN:
+            logger.error("❌ DISCORD_TOKEN não encontrado!")
+            sys.exit(1)
+            
+        logger.info("⏳ Iniciando conexão com o Discord...")
+        async with bot:
+            await bot.start(TOKEN)
+    except discord.errors.LoginFailure:
+        logger.error("❌ Erro de Login: Token Inválido! Verifique seu DISCORD_TOKEN.")
+        sys.exit(1)
+    except discord.errors.HTTPException as e:
+        if e.status == 429:
+            wait = random.randint(60, 180)
+            logger.warning(f"⚠️ RATE LIMIT (IP Bloqueado pelo Discord). Aguardando {wait}s antes de reiniciar...")
+            await asyncio.sleep(wait)
+        else:
+            logger.error(f"❌ Erro HTTP Discord: {e}")
+            await asyncio.sleep(10)
+        os.execv(sys.executable, [sys.executable, '-u'] + sys.argv)
+    except Exception as e:
+        logger.error(f"❌ Erro Fatal no Loop do Bot: {e}", exc_info=True)
+        await asyncio.sleep(10)
+        os.execv(sys.executable, [sys.executable, '-u'] + sys.argv)
 
 if __name__ == '__main__':
     try:
