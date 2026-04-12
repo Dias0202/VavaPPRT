@@ -6,7 +6,11 @@ import logging
 import random
 
 # Configuração de log
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger("VavaPPRT")
 
 from dotenv import load_dotenv
@@ -14,7 +18,8 @@ load_dotenv()
 
 # Diagnóstico de Variáveis
 for var in ["DISCORD_TOKEN", "DATABASE_URL", "HENRIKDEV_API_KEY"]:
-    print(f"DEBUG: {var}: {'✅ OK' if os.getenv(var) else '❌ FALTANDO'}")
+    status = '✅ OK' if os.getenv(var) else '❌ FALTANDO'
+    logger.info(f"DIAGNOSTICO: {var}: {status}")
 
 try:
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -24,12 +29,12 @@ try:
     from database import init_db, save_user, get_user, get_all_users, match_exists, save_match_data, set_config, get_config, remove_user, get_connection
     from valorant_api import fetch_player_matches, fetch_mmr, fetch_leaderboard, fetch_store_featured, get_crosshair_url
     from processor import calculate_metrics
-    print("✅ Módulos locais carregados com sucesso.")
+    logger.info("✅ Módulos locais carregados com sucesso.")
 except Exception as e:
-    print(f"❌ Erro ao carregar módulos: {e}")
+    logger.error(f"❌ Erro ao carregar módulos: {e}", exc_info=True)
     sys.exit(1)
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip() or None
 
 # Servidor Web para o Render (Health Check)
 async def handle(request):
@@ -44,28 +49,38 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 @bot.event
 async def on_ready():
-    print(f"✅ SUCESSO! Bot logado como: {bot.user}")
+    logger.info(f"✅ SUCESSO! Bot logado como: {bot.user} (ID: {bot.user.id})")
     try:
         init_db()
-        print("✅ Banco de dados inicializado.")
+        logger.info("✅ Banco de dados inicializado.")
     except Exception as e:
-        print(f"❌ Erro Banco: {e}")
+        logger.error(f"❌ Erro Banco: {e}", exc_info=True)
+    
     if not check_matches.is_running():
         check_matches.start()
+        logger.info("✅ Loop de monitoramento de partidas iniciado.")
 
 @tasks.loop(minutes=5)
 async def check_matches():
     """Loop automático para monitorar novas partidas."""
     try:
         channel_id = get_config("notification_channel")
-        if not channel_id: return
+        if not channel_id: 
+            logger.debug("Loop de partidas: canal de notificação não configurado.")
+            return
+            
         channel = bot.get_channel(int(channel_id))
-        if not channel: return
+        if not channel: 
+            logger.warning(f"Loop de partidas: canal {channel_id} não encontrado.")
+            return
 
         users = get_all_users()
+        logger.info(f"Monitorando {len(users)} usuários...")
+        
         for discord_id, name, tag in users:
             data = await fetch_player_matches(name, tag)
-            if "error" in data or 'data' not in data or not data['data']: continue
+            if "error" in data or 'data' not in data or not data['data']: 
+                continue
                 
             for match in data['data'][:3]:
                 match_id = match['metadata']['matchid']
@@ -112,19 +127,29 @@ async def configurar_canal(ctx):
 @bot.command()
 async def registrar(ctx, riot_id: str):
     if "#" not in riot_id: return await ctx.send("Use Nome#Tag")
-    name, tag = riot_id.split("#")
-    save_user(ctx.author.id, name, tag)
-    await ctx.send(f"✅ {name}#{tag} registrado!")
+    try:
+        name, tag = riot_id.split("#")
+        save_user(ctx.author.id, name, tag)
+        await ctx.send(f"✅ {name}#{tag} registrado!")
+    except Exception as e:
+        logger.error(f"Erro ao registrar: {e}")
+        await ctx.send("❌ Erro interno ao registrar.")
 
 @bot.command()
 async def stats(ctx):
-    user = get_user(ctx.author.id)
-    if not user: return await ctx.send("Use !registrar")
-    name, tag = user
-    data = await fetch_player_matches(name, tag)
-    if "data" in data and data['data']:
-        m = calculate_metrics(data['data'][0], name)
-        await ctx.send(f"📊 {name}#{tag}: {m['kills']}/{m['deaths']} com {m['agent']}")
+    try:
+        user = get_user(ctx.author.id)
+        if not user: return await ctx.send("Use !registrar")
+        name, tag = user
+        data = await fetch_player_matches(name, tag)
+        if "data" in data and data['data']:
+            m = calculate_metrics(data['data'][0], name)
+            await ctx.send(f"📊 {name}#{tag}: {m['kills']}/{m['deaths']} com {m['agent']}")
+        else:
+            await ctx.send("❌ Não foi possível obter dados da API.")
+    except Exception as e:
+        logger.error(f"Erro no comando stats: {e}")
+        await ctx.send("❌ Erro ao processar estatísticas.")
 
 async def main():
     # Inicia Web Server
@@ -134,31 +159,42 @@ async def main():
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
-        print(f"✅ Servidor Web na porta {port}")
+        logger.info(f"✅ Servidor Web na porta {port}")
     except Exception as e:
-        print(f"❌ Erro Web: {e}")
+        logger.error(f"❌ Erro Web: {e}")
 
     # Loop de Conexão Discord (Anti-429)
     retries = 0
     while True:
         try:
-            print(f"⏳ Tentando conectar ao Discord (Tentativa {retries + 1})...")
+            if not TOKEN:
+                logger.error("❌ DISCORD_TOKEN não encontrado!")
+                await asyncio.sleep(60)
+                continue
+                
+            logger.info(f"⏳ Tentando conectar ao Discord (Tentativa {retries + 1})...")
             async with bot:
                 await bot.start(TOKEN)
+        except discord.errors.LoginFailure:
+            logger.error("❌ Erro de Login: Token Inválido! Verifique seu DISCORD_TOKEN.")
+            await asyncio.sleep(60)
         except discord.errors.HTTPException as e:
             if e.status == 429:
                 wait = random.randint(60, 180) + (retries * 60)
-                print(f"⚠️ RATE LIMIT (IP Bloqueado pelo Discord). Aguardando {wait}s...")
+                logger.warning(f"⚠️ RATE LIMIT (IP Bloqueado pelo Discord). Aguardando {wait}s...")
                 await asyncio.sleep(wait)
                 retries += 1
             else:
-                print(f"❌ Erro Discord: {e}")
+                logger.error(f"❌ Erro HTTP Discord: {e}")
                 await asyncio.sleep(60)
         except Exception as e:
-            print(f"❌ Erro Fatal: {e}")
+            logger.error(f"❌ Erro Fatal no Loop do Bot: {e}", exc_info=True)
             await asyncio.sleep(60)
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
-    except KeyboardInterrupt: pass
+    except KeyboardInterrupt:
+        logger.info("Bot encerrado pelo usuário.")
+    except Exception as e:
+        logger.critical(f"Erro inesperado: {e}", exc_info=True)
