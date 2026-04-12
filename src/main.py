@@ -29,8 +29,13 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 @bot.event
 async def on_ready():
-    init_db()
     print(f"Bot logado como {bot.user}")
+    try:
+        init_db()
+        print("✅ Banco de dados inicializado com sucesso.")
+    except Exception as e:
+        print(f"❌ ERRO ao inicializar banco de dados: {e}")
+        
     if not check_matches.is_running():
         check_matches.start()
 
@@ -424,23 +429,30 @@ async def mira(ctx, codigo: str):
     await ctx.send(embed=embed)
 
 async def main():
-    # Inicia o servidor web
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    print(f"Servidor Web rodando na porta {port}")
-    
-    # Inicia o bot
-    async with bot:
-        await bot.start(TOKEN)
+    # Inicia o servidor web ANTES de tudo para o Render não dar timeout
+    try:
+        runner = web.AppRunner(app)
+        await runner.setup()
+        port = int(os.environ.get("PORT", 8080))
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        print(f"✅ Servidor Web rodando na porta {port}")
+    except Exception as e:
+        print(f"❌ Erro ao iniciar servidor web: {e}")
+
+    # Tenta iniciar o bot
+    if not TOKEN:
+        print("❌ ERRO: DISCORD_TOKEN não configurado!")
+        return
+
+    try:
+        async with bot:
+            await bot.start(TOKEN)
+    except Exception as e:
+        print(f"❌ Erro fatal no bot: {e}")
 
 if __name__ == '__main__':
-    if not TOKEN:
-        print("ERRO: DISCORD_TOKEN não encontrado.")
-    else:
-        try:
-            asyncio.run(main())
-        except KeyboardInterrupt:
-            pass
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
