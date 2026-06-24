@@ -1,0 +1,32 @@
+name: Backfill de histórico (manual)
+
+# Roda SOB DEMANDA (aba Actions → Run workflow). Popula K/D, vitória, mapas e
+# agentes de partidas antigas via lifetime. Não tem schedule — é one-time.
+on:
+  workflow_dispatch:
+    inputs:
+      pages:
+        description: "Páginas de histórico por jogador (~20 partidas cada)"
+        required: false
+        default: "5"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Instalar dependências
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Rodar backfill
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          HENRIKDEV_API_KEY: ${{ secrets.HENRIKDEV_API_KEY }}
+          DEFAULT_REGION: ${{ vars.DEFAULT_REGION || 'latam' }}
+        run: python -m app.poll backfill ${{ github.event.inputs.pages }}

@@ -1,0 +1,26 @@
+# Segredos
+.env
+.env.local
+backend/.env
+frontend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.db
+backend/data/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+.nodeenv/
+*.log
+
+# Dumps de exploração da API (contêm nomes/puuids reais)
+_api_dump/
+
+# Editores / SO
+.DS_Store
+.vscode/

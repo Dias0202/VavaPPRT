@@ -1,0 +1,37 @@
+name: Poller de partidas
+
+# "Poller contínuo" via cron: a cada 10 minutos o GitHub Actions roda o script
+# de ingestão, que busca partidas novas na Henrik e grava no Supabase.
+# Respeita o rate limit (o cliente serializa as chamadas com intervalo mínimo).
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {} # permite rodar manualmente pela aba Actions
+
+concurrency:
+  group: poller
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalar dependências
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Rodar ingestão
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          HENRIKDEV_API_KEY: ${{ secrets.HENRIKDEV_API_KEY }}
+          DEFAULT_REGION: ${{ vars.DEFAULT_REGION || 'latam' }}
+        run: python -m app.poll
