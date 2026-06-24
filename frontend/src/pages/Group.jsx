@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { api } from "../lib/api";
 import { Conf, WrBar, Loader, Empty } from "../components/blocks";
 
@@ -7,7 +8,7 @@ const REGIONS = ["latam", "br", "na", "eu", "ap", "kr"];
 export default function Group() {
   const [squads, setSquads] = useState(null);
   const [err, setErr] = useState("");
-  const [sel, setSel] = useState(null); // grupo selecionado (members)
+  const [sel, setSel] = useState(null);
 
   function load() {
     api.squads().then(setSquads).catch((e) => setErr(e.message));
@@ -31,6 +32,8 @@ export default function Group() {
           : <SquadList squads={squads} onPick={setSel} picked={sel} />
       )}
       {sel && <GroupDetail members={sel} onClose={() => setSel(null)} />}
+
+      <CorrelationPanel />
     </>
   );
 }
@@ -54,7 +57,6 @@ function AddPlayer({ onAdded }) {
       });
       setMsg({ ok: true, text: r.message || "Adicionado. Baixando dados…" });
       setF({ riot_id: "", tagline: "", region: f.region });
-      // dá um tempo pro backfill e recarrega
       setTimeout(onAdded, 8000);
       setTimeout(onAdded, 25000);
     } catch (e) {
@@ -108,9 +110,15 @@ function SquadList({ squads, onPick, picked }) {
         {squads.map((g, i) => {
           const members = g.members.map((m) => ({ riot_id: m.riot_id, tagline: m.tagline }));
           return (
-            <div className="duo-row" key={i}
+            <motion.div
+              className="duo-row"
+              key={i}
               style={{ cursor: "pointer", background: sameSel(members) ? "var(--surface-2)" : undefined }}
-              onClick={() => onPick(members)}>
+              onClick={() => onPick(members)}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.05, duration: 0.2 }}
+            >
               <div className="duo-names">
                 <span className="tag" style={{ marginRight: 10 }}>{g.size}x</span>
                 {g.members.map((m, j) => (
@@ -123,7 +131,7 @@ function SquadList({ squads, onPick, picked }) {
                 <span className={g.win_rate >= 50 ? "win" : "loss"}>{g.win_rate}%</span>
                 <div className="muted" style={{ fontSize: 11 }}>{g.wins}/{g.games}</div>
               </div>
-            </div>
+            </motion.div>
           );
         })}
       </div>
@@ -141,7 +149,7 @@ function StatTile({ k, v, sub }) {
   );
 }
 
-// ---------- Detalhe do grupo (acionável) ----------
+// ---------- Detalhe do grupo ----------
 function GroupDetail({ members, onClose }) {
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
@@ -152,7 +160,12 @@ function GroupDetail({ members, onClose }) {
 
   const title = members.map((m) => m.riot_id).join(" + ");
   return (
-    <div style={{ marginTop: 28 }} className="fade">
+    <motion.div
+      style={{ marginTop: 28 }}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25 }}
+    >
       <div className="flex between" style={{ marginBottom: 14 }}>
         <h2 style={{ fontSize: 24 }}>{title}</h2>
         <button className="btn ghost" style={{ padding: "6px 14px" }} onClick={onClose}>Fechar</button>
@@ -170,9 +183,16 @@ function GroupDetail({ members, onClose }) {
               <div className="section-title"><span className="eyebrow">Forma recente (juntos)</span></div>
               <div className="form-row">
                 {d.form.map((f, i) => (
-                  <div key={i} className={`form-cell ${f.won ? "w" : "l"} ${i === 0 ? "recent" : ""}`} title={f.map || ""}>
+                  <motion.div
+                    key={i}
+                    className={`form-cell ${f.won ? "w" : "l"} ${i === 0 ? "recent" : ""}`}
+                    title={f.map || ""}
+                    initial={{ opacity: 0, scale: 0.7 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: i * 0.04, duration: 0.18 }}
+                  >
                     {f.won ? "V" : "D"}
-                  </div>
+                  </motion.div>
                 ))}
                 <span className="muted mono" style={{ fontSize: 11, marginLeft: 8 }}>← mais recente</span>
               </div>
@@ -209,8 +229,7 @@ function GroupDetail({ members, onClose }) {
               </div>
               {d.deep.games === 0 ? (
                 <div className="panel"><span className="muted">
-                  Ainda sem partidas completas jogadas juntas. Clutch, entrada e KAST do grupo
-                  liberam conforme vocês acumularem partidas competitivas completas.
+                  Ainda sem partidas completas juntas. Clutch, entrada e KAST liberam conforme acumulam.
                 </span></div>
               ) : (
                 <div className="stat-grid">
@@ -229,11 +248,7 @@ function GroupDetail({ members, onClose }) {
               <div className="section-title"><span className="eyebrow">Mapas — o que filar / evitar</span></div>
               <div className="panel">
                 {d.maps.length ? d.maps.map((m) => (
-                  <div className="wr" key={m.map}>
-                    <span className="lbl">{m.map}</span>
-                    <div className="track"><span className={m.win_rate < 50 ? "hot" : ""} style={{ width: `${m.win_rate}%` }} /></div>
-                    <span className="val">{m.win_rate}% <span className="muted" style={{ fontSize: 11 }}>({m.games})</span></span>
-                  </div>
+                  <WrBar key={m.map} label={m.map} value={m.win_rate} n={m.games} />
                 )) : <Empty>Sem mapas suficientes.</Empty>}
               </div>
             </section>
@@ -254,6 +269,99 @@ function GroupDetail({ members, onClose }) {
           </div>
         </>
       )}
+    </motion.div>
+  );
+}
+
+// ---------- Motor de Correlação de Agentes ----------
+function CorrelationPanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  function load() {
+    if (loaded) return;
+    setLoaded(true);
+    api.groupCorrelation().then(setData).catch((e) => setErr(e.message));
+  }
+
+  return (
+    <div style={{ marginTop: 28 }}>
+      <div className="flex between" style={{ marginBottom: 14 }}>
+        <div className="section-title">
+          <span className="eyebrow">Motor de Correlação de Agentes</span>
+        </div>
+        <button
+          className="btn ghost"
+          style={{ padding: "6px 14px" }}
+          onClick={() => { setOpen(!open); load(); }}
+        >
+          {open ? "Ocultar" : "Ver Correlações"}
+        </button>
+      </div>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, height: 0, overflow: "hidden" }}
+            animate={{ opacity: 1, height: "auto", overflow: "visible" }}
+            exit={{ opacity: 0, height: 0, overflow: "hidden" }}
+            transition={{ duration: 0.28 }}
+          >
+            {err && <div className="error-box">{err}</div>}
+            {!data ? <Loader /> : (
+              <>
+                <div className="panel" style={{ marginBottom: 16 }}>
+                  <div className="section-title"><span className="eyebrow">Impacto do First Blood no grupo</span></div>
+                  {Object.entries(data.first_blood_impact || {}).map(([key, val]) => (
+                    <WrBar
+                      key={key}
+                      label={key === "fb_secured" ? "FB garantido" : "FB perdido"}
+                      value={val.win_rate}
+                      n={val.games}
+                      hotBelow={key === "fb_lost" ? 101 : 50}
+                    />
+                  ))}
+                  {Object.keys(data.first_blood_impact || {}).length === 0 && (
+                    <Empty>Sem dados suficientes de first blood ainda.</Empty>
+                  )}
+                </div>
+                <div className="panel">
+                  <div className="section-title">
+                    <span className="eyebrow">Composições × Mapa (grupo completo)</span>
+                    <span className="muted mono" style={{ fontSize: 11, marginLeft: 8 }}>
+                      {data.total_together} partidas analisadas
+                    </span>
+                  </div>
+                  {data.map_agent_combos && data.map_agent_combos.length > 0 ? (
+                    data.map_agent_combos.map((c, i) => (
+                      <motion.div
+                        key={i}
+                        className="duo-row"
+                        style={{ gridTemplateColumns: "80px 1fr 90px" }}
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.04 }}
+                      >
+                        <span className="tag">{c.map}</span>
+                        <span className="mono" style={{ fontSize: 12 }}>{c.agent_combo}</span>
+                        <span className={`mono ${c.win_rate >= 50 ? "win" : "loss"}`} style={{ textAlign: "right" }}>
+                          {c.win_rate}%
+                          <span className="muted" style={{ fontSize: 10, display: "block" }}>
+                            {c.games}j <Conf level={c.confidence} n={c.games} />
+                          </span>
+                        </span>
+                      </motion.div>
+                    ))
+                  ) : (
+                    <Empty>Sem composições registradas ainda. O grupo precisa jogar partidas competitivas completas juntos.</Empty>
+                  )}
+                </div>
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

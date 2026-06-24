@@ -1,22 +1,34 @@
-// Blocos reutilizáveis de exibição de estatísticas.
 import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { motion } from "framer-motion";
 
 export function StatCard({ label, value, suffix, tone }) {
   return (
-    <div className="stat">
+    <motion.div
+      className="stat"
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.22 }}
+      whileHover={{ y: -3, transition: { duration: 0.12 } }}
+    >
       <div className="k">{label}</div>
       <div className="v" style={tone ? { color: `var(--${tone})` } : undefined}>
         {value}
         {suffix && <small> {suffix}</small>}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
 export function AgentRow({ agent, max }) {
   const pct = max > 0 ? Math.round((agent.score_index / max) * 100) : 0;
   return (
-    <div className="agent-row">
+    <motion.div
+      className="agent-row"
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.2 }}
+    >
       <div className="agent-name">
         <AgentAvatar name={agent.agent} />
         <div>
@@ -34,10 +46,14 @@ export function AgentRow({ agent, max }) {
       <div style={{ textAlign: "right" }}>
         <div className="mono" style={{ fontSize: 15 }}>{agent.win_rate}%</div>
         <div className="bar" style={{ marginTop: 6 }}>
-          <span style={{ width: `${pct}%` }} />
+          <motion.span
+            initial={{ width: 0 }}
+            animate={{ width: `${pct}%` }}
+            transition={{ duration: 0.9, ease: [0.4, 0, 0.2, 1] }}
+          />
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -45,13 +61,21 @@ const ASSET = "https://valorant-api.com/v1/agents?isPlayableCharacter=true";
 let _agentMap = null;
 
 export function AgentAvatar({ name, size = 40, cls = "av" }) {
-  // Resolve o ícone do agente pela Valorant-API (cacheado no módulo).
   const src = useAgentIcon(name);
   if (!src) return <div className={cls} style={{ width: size, height: size }} />;
-  return <img className={cls} style={{ width: size, height: size }} src={src} alt={name} />;
+  return (
+    <motion.img
+      className={cls}
+      style={{ width: size, height: size }}
+      src={src}
+      alt={name}
+      initial={{ opacity: 0, scale: 0.85 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.2 }}
+    />
+  );
 }
 
-import { useEffect, useState } from "react";
 function useAgentIcon(name) {
   const [src, setSrc] = useState(null);
   useEffect(() => {
@@ -76,8 +100,15 @@ function useAgentIcon(name) {
 }
 
 export function MatchRow({ m }) {
+  const won = m.won; // was m.was_win — API returns `won`
   return (
-    <div className={`match ${m.was_win ? "w" : "l"}`}>
+    <motion.div
+      className={`match ${won ? "w" : "l"}`}
+      initial={{ opacity: 0, x: -6 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.18 }}
+      whileHover={{ x: 3, transition: { duration: 0.1 } }}
+    >
       <div className="edge" />
       <AgentAvatar name={m.agent} size={44} />
       <div className="meta">
@@ -86,11 +117,12 @@ export function MatchRow({ m }) {
       </div>
       <div className="kda">
         {m.kills}<span className="muted">/</span>{m.deaths}<span className="muted">/</span>{m.assists}
+        <div className="muted" style={{ fontSize: 11 }}>ACS {m.acs}</div>
       </div>
-      <div className={`res ${m.was_win ? "win" : "loss"}`}>
-        {m.was_win ? "Vitória" : "Derrota"}
+      <div className={`res ${won ? "win" : "loss"}`}>
+        {won ? "Vitória" : "Derrota"}
       </div>
-    </div>
+    </motion.div>
   );
 }
 

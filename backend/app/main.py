@@ -257,3 +257,48 @@ def group_duo(ra: str, ta: str, rb: str, tb: str, user=Depends(current_user)):
     if not ua.get("consent") or not ub.get("consent"):
         raise HTTPException(403, "Jogador não autorizou exibir dados.")
     return analytics.duo_detail(ua["puuid"], ub["puuid"], ua["username"], ub["username"])
+
+
+@app.get("/group/correlation")
+def group_correlation(user=Depends(current_user)):
+    """Motor de correlação: mapa × composição × first-blood do grupo completo."""
+    friend_puuids, info_by = _roster_info()
+    return analytics.group_correlation(list(friend_puuids), info_by)
+
+
+@app.get("/group/round-analysis")
+def group_round_analysis(user=Depends(current_user)):
+    """Correlação de sobrevivência em round: N membros vivos no fim → WR da partida."""
+    friend_puuids, _ = _roster_info()
+    return analytics.round_correlation(list(friend_puuids))
+
+
+@app.get("/players/{riot_id}/{tagline}/spatial")
+def spatial(riot_id: str, tagline: str, map: str = Query(default=None), user=Depends(current_user)):
+    """Posições do jogador em snapshots de kills (para análise espacial avançada)."""
+    return analytics.player_spatial(_resolve_puuid(riot_id, tagline), map)
+
+
+@app.get("/validate/metrics")
+def validate_metrics(limit: int = Query(default=5, le=20), user=Depends(current_user)):
+    """Recomputes stored metrics from raw match data and surfaces discrepancies."""
+    from . import metrics as M
+    match_ids = db.recent_match_ids(limit)
+    results = []
+    for mid in match_ids:
+        raw = db.get_raw_match(mid)
+        if not raw:
+            continue
+        stored = db.derived_for_puuid_match(mid)
+        validations = []
+        for row in stored:
+            report = M.validate_match_metrics(raw, row["puuid"])
+            if report:
+                validations.append(report)
+        results.append({
+            "match_id": mid,
+            "players_count": len(stored),
+            "validations": validations,
+            "issues_found": sum(1 for v in validations if not v.get("clean")),
+        })
+    return results

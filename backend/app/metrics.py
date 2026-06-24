@@ -467,14 +467,70 @@ def lifetime_summary(lm, puuid):
 
 
 def strip_raw(match):
-    """Remove posições por-kill/plant (volumosas, não usadas) para encolher o raw."""
+    """Strips bulky round-level player_locations from plant/defuse only.
+    Kill-level player_locations are preserved for spatial analysis recomputation."""
     import copy
     m = copy.deepcopy(match)
-    for k in m.get("kills", []):
-        k.pop("player_locations", None)
     for rd in m.get("rounds", []):
         if rd.get("plant"):
             rd["plant"].pop("player_locations", None)
         if rd.get("defuse"):
             rd["defuse"].pop("player_locations", None)
     return m
+
+
+def validate_match_metrics(match, puuid):
+    """Cross-checks computed metrics against raw data to surface discrepancies.
+
+    Returns a dict with any anomalies found; empty dict = clean.
+    Discrepancies are also emitted as WARNING log lines.
+    """
+    import logging
+    _log = logging.getLogger("validate")
+
+    summary = player_summary(match, puuid)
+    if not summary:
+        return {"error": "player_not_found"}
+
+    issues = {}
+    rounds_list = player_round_rows(match, puuid)
+    n_rounds = len(rounds_list) or 1
+
+    # ACS check
+    acs_computed = round(summary["score"] / n_rounds, 0)
+    if summary["score"] == 0 and n_rounds > 5:
+        issues["zero_score"] = {"rounds": n_rounds, "score": summary["score"]}
+        _log.warning("VALIDATE %s: zero score over %d rounds", puuid[:8], n_rounds)
+
+    # HS% check
+    hs = summary["headshots"]
+    bs = summary["bodyshots"]
+    ls = summary["legshots"]
+    total_hits = hs + bs + ls
+    hs_pct = round(100 * hs / total_hits, 1) if total_hits else 0
+    if total_hits == 0 and summary["kills"] > 0:
+        issues["zero_shots_with_kills"] = {"kills": summary["kills"]}
+        _log.warning("VALIDATE %s: %d kills but zero shot breakdown", puuid[:8], summary["kills"])
+    if hs_pct > 80:
+        issues["implausible_hs_pct"] = {"hs_pct": hs_pct, "hits": total_hits}
+        _log.warning("VALIDATE %s: HS%% %.1f%% implausible", puuid[:8], hs_pct)
+
+    # KD sanity
+    if summary["kills"] > n_rounds * 5:
+        issues["impossible_kills"] = {"kills": summary["kills"], "rounds": n_rounds}
+        _log.warning("VALIDATE %s: %d kills in %d rounds (impossible)", puuid[:8], summary["kills"], n_rounds)
+
+    # Damage check
+    total_dmg = sum(r["damage"] for r in rounds_list)
+    if total_dmg == 0 and summary["kills"] > 0:
+        issues["zero_damage_with_kills"] = {"kills": summary["kills"]}
+        _log.warning("VALIDATE %s: kills but zero damage recorded", puuid[:8])
+
+    return {
+        "puuid": puuid[:8],
+        "acs": acs_computed,
+        "hs_pct": hs_pct,
+        "rounds": n_rounds,
+        "issues": issues,
+        "clean": len(issues) == 0,
+    }

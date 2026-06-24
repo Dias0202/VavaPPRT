@@ -189,12 +189,21 @@ def init_db():
             PRIMARY KEY (match_id, round_id, order_in_round)
         )""")
 
+        # Positional snapshots at key events (kill frames, plant/defuse).
+        cur.execute("""CREATE TABLE IF NOT EXISTS spatial_events (
+            match_id TEXT, round_id INTEGER, puuid TEXT, event_type TEXT,
+            time_ms INTEGER, x REAL, y REAL, z REAL,
+            outcome TEXT,
+            PRIMARY KEY (match_id, round_id, puuid, event_type, time_ms)
+        )""")
+
         for stmt in (
             "CREATE INDEX IF NOT EXISTS idx_mp_puuid ON match_players(puuid)",
             "CREATE INDEX IF NOT EXISTS idx_pmd_puuid ON player_match_derived(puuid)",
             "CREATE INDEX IF NOT EXISTS idx_kills_killer ON kills(killer_puuid)",
             "CREATE INDEX IF NOT EXISTS idx_kills_victim ON kills(victim_puuid)",
             "CREATE INDEX IF NOT EXISTS idx_prs_puuid ON player_round_stats(puuid)",
+            "CREATE INDEX IF NOT EXISTS idx_se_puuid ON spatial_events(puuid)",
         ):
             cur.execute(stmt)
 
@@ -407,7 +416,7 @@ def compress_raw(match_dict_stripped):
     return gzip.compress(json.dumps(match_dict_stripped, ensure_ascii=False).encode("utf-8"))
 
 
-def save_match_bundle(meta, raw_gz, match_players, derived, round_rows, kill_rows):
+def save_match_bundle(meta, raw_gz, match_players, derived, round_rows, kill_rows, spatial_rows=None):
     """Grava uma partida inteira de forma idempotente."""
     conn = get_connection()
     try:
@@ -446,6 +455,13 @@ def save_match_bundle(meta, raw_gz, match_players, derived, round_rows, kill_row
         for r in kill_rows:
             _upsert(conn, "kills", k_cols, ["match_id", "round_id", "order_in_round"],
                     tuple(r[c] for c in k_cols))
+
+        if spatial_rows:
+            se_cols = ["match_id", "round_id", "puuid", "event_type", "time_ms", "x", "y", "z", "outcome"]
+            for r in spatial_rows:
+                _upsert(conn, "spatial_events", se_cols,
+                        ["match_id", "round_id", "puuid", "event_type", "time_ms"],
+                        tuple(r.get(c) for c in se_cols))
 
         conn.commit()
     finally:
@@ -562,3 +578,38 @@ def set_cached(cache_key, data):
         conn.commit()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Spatial events
+# ---------------------------------------------------------------------------
+def spatial_events_for_puuid(puuid):
+    return _query("SELECT * FROM spatial_events WHERE puuid = ?", (puuid,))
+
+
+# ---------------------------------------------------------------------------
+# Raw match recomputation helpers
+# ---------------------------------------------------------------------------
+def get_raw_match(match_id):
+    """Returns decompressed match dict, or None if no raw stored."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT raw_gz FROM matches WHERE match_id = {_ph(conn)}", (match_id,))
+        r = cur.fetchone()
+        if not r or not r[0]:
+            return None
+        return json.loads(gzip.decompress(bytes(r[0])))
+    finally:
+        conn.close()
+
+
+def recent_match_ids(limit=5):
+    return [r["match_id"] for r in _query(
+        "SELECT match_id FROM matches WHERE raw_gz IS NOT NULL ORDER BY started_raw DESC LIMIT ?",
+        (limit,),
+    )]
+
+
+def derived_for_puuid_match(match_id):
+    return _query("SELECT * FROM player_match_derived WHERE match_id = ?", (match_id,))

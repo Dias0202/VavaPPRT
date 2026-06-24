@@ -28,10 +28,10 @@ def main():
             if a.isdigit():
                 pages = int(a)
         result = backfill_all(pages=pages)
-        print(f"BACKFILL: {result['users']} usuários, {result['backfilled']} partidas-resumo.")
+        print(f"BACKFILL: {result['players']} usuários, {result['backfilled']} partidas-resumo.")
     else:
         result = ingest_all()
-        print(f"OK: {result['users']} usuários, {result['new_matches']} partidas novas.")
+        print(f"OK: {result['players']} usuários, {result['new_matches']} partidas novas.")
 
 
 if __name__ == "__main__":

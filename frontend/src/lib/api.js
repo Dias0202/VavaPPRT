@@ -66,4 +66,8 @@ export const api = {
   insights: (r, t) => request(p(r, t, "/insights")),
   recent: (r, t) => request(p(r, t, "/recent")),
   heatmap: (r, t, map) => request(p(r, t, `/heatmap${map ? `?map=${encodeURIComponent(map)}` : ""}`)),
+  spatial: (r, t, map) => request(p(r, t, `/spatial${map ? `?map=${encodeURIComponent(map)}` : ""}`)),
+  groupCorrelation: () => request("/group/correlation"),
+  roundAnalysis: () => request("/group/round-analysis"),
+  validateMetrics: (limit = 5) => request(`/validate/metrics?limit=${limit}`),
 };

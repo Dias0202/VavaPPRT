@@ -427,3 +427,147 @@ main.page { padding: 32px 0 64px; }
   .match .res { display: none; }
   .nav a { padding: 8px 10px; }
 }
+
+/* ============================================================
+   ANIMATION SYSTEM
+   ============================================================ */
+:root {
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 150ms;
+  --dur-norm: 280ms;
+  --dur-slow: 500ms;
+}
+
+/* Glassmorphism panel variant */
+.panel.glass {
+  background: rgba(24, 37, 48, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+/* Shimmer skeleton */
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
+  background-size: 400px 100%;
+  animation: shimmer 1.4s ease infinite;
+  border-radius: 2px;
+}
+.skeleton-text { height: 14px; margin: 6px 0; }
+.skeleton-stat { height: 80px; }
+
+/* Stat card hover */
+.stat {
+  transition: border-color var(--dur-norm) var(--ease-smooth),
+              transform var(--dur-fast) var(--ease-smooth),
+              box-shadow var(--dur-norm) var(--ease-smooth);
+}
+.stat:hover {
+  border-color: var(--red-dim);
+  box-shadow: 0 8px 24px rgba(255, 70, 85, 0.12);
+}
+
+/* Smooth bar fill */
+.bar > span, .wr .track > span {
+  transition: width 0.8s var(--ease-smooth);
+}
+
+/* Page transition wrapper */
+.page-motion { will-change: opacity, transform; }
+
+/* Tactical scan line on topbar */
+.topbar {
+  position: relative;
+}
+.topbar::after {
+  content: "";
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--red), transparent);
+  opacity: 0;
+  animation: scanLine 6s ease-in-out infinite;
+}
+@keyframes scanLine {
+  0%, 100% { opacity: 0; transform: scaleX(0); }
+  50% { opacity: 0.5; transform: scaleX(1); }
+}
+
+/* Panel top-edge accent */
+.panel { position: relative; }
+.panel::after {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--red), transparent 60%);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* Win/loss badge background tint */
+.res { position: relative; overflow: hidden; }
+.res::before {
+  content: "";
+  position: absolute; inset: 0;
+  background: currentColor;
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+/* Agent avatar glow on hover */
+.agent-name .av {
+  transition: filter var(--dur-norm) ease, transform var(--dur-fast) ease;
+}
+.agent-row:hover .av {
+  filter: brightness(1.2) drop-shadow(0 0 8px rgba(255,70,85,0.35));
+  transform: scale(1.06);
+}
+
+/* Table row hover */
+.board tr { transition: background var(--dur-fast) ease; }
+
+/* Form cell micro-interaction */
+.form-cell {
+  transition: transform var(--dur-fast) var(--ease-spring),
+              box-shadow var(--dur-norm) ease;
+}
+.form-cell:hover { transform: scale(1.1); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+
+/* Duo row hover */
+.duo-row { transition: background var(--dur-fast) ease; }
+.duo-row:hover { background: var(--surface-2) !important; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-2); }
+
+/* Input glow focus */
+.field input:focus {
+  box-shadow: 0 0 0 1px var(--red), 0 0 12px rgba(255,70,85,0.15);
+}
+
+/* Button shine sweep */
+.btn { position: relative; overflow: hidden; }
+.btn::after {
+  content: "";
+  position: absolute;
+  top: 0; left: -100%;
+  width: 60%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.11), transparent);
+  transform: skewX(-20deg);
+  transition: left var(--dur-slow) ease;
+  pointer-events: none;
+}
+.btn:hover::after { left: 150%; }
+
+/* Stat value color transition */
+.stat .v { transition: color var(--dur-norm) ease; }
+.stat .v small { vertical-align: super; font-size: 12px; }

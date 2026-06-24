@@ -16,6 +16,32 @@ from . import metrics as M
 logger = logging.getLogger("ingest")
 
 
+def extract_spatial_events(match, friend_puuids):
+    """Extracts player positions at kill-frame snapshots for spatial analysis."""
+    rows = []
+    meta = M.match_meta(match)
+    mid = meta["match_id"]
+
+    for k in match.get("kills", []):
+        rid = k.get("round", 0)
+        t = k.get("time_in_round_in_ms", 0)
+        for entry in k.get("player_locations", []) or []:
+            p = entry.get("player") or {}
+            puuid = p.get("puuid")
+            if not puuid or puuid not in friend_puuids:
+                continue
+            loc = entry.get("location") or {}
+            rows.append({
+                "match_id": mid, "round_id": rid, "puuid": puuid,
+                "event_type": "kill_snapshot",
+                "time_ms": t,
+                "x": loc.get("x"), "y": loc.get("y"), "z": 0,
+                "outcome": "kill_event",
+            })
+
+    return rows
+
+
 def process_match(match, friend_puuids):
     """Monta o bundle de gravação de uma partida v4. Retorna dict de listas."""
     meta = M.match_meta(match)
@@ -44,18 +70,28 @@ def process_match(match, friend_puuids):
     attacker_map = M.infer_attacker_by_round(match)
 
     derived, round_rows = [], []
+    player_summary_cache = {}
     for puuid in friends_here:
         d = M.build_player_derived(match, puuid, kills_ann, attacker_map)
         if d:
             derived.append(d)
-        for r in M.player_round_rows(match, puuid):
-            round_rows.append({
-                "match_id": meta["match_id"], "round_id": r["round_id"], "puuid": puuid,
-                "kills": r["kills"], "damage": r["damage"], "headshots": r["headshots"],
-                "loadout_value": r["loadout_value"], "buy_type": r["buy_type"], "weapon": r["weapon"],
-                "alive_end": 1 if r["alive_end"] else 0, "was_traded": 1 if r["was_traded"] else 0,
-                "attacker_side": 1 if attacker_map.get(r["round_id"]) == M.player_summary(match, puuid)["team"] else 0,
-            })
+        ps = M.player_summary(match, puuid)
+        player_summary_cache[puuid] = ps
+        if ps:
+            for r in M.player_round_rows(match, puuid):
+                round_rows.append({
+                    "match_id": meta["match_id"], "round_id": r["round_id"], "puuid": puuid,
+                    "kills": r["kills"], "damage": r["damage"], "headshots": r["headshots"],
+                    "loadout_value": r["loadout_value"], "buy_type": r["buy_type"], "weapon": r["weapon"],
+                    "alive_end": 1 if r["alive_end"] else 0, "was_traded": 1 if r["was_traded"] else 0,
+                    "attacker_side": 1 if attacker_map.get(r["round_id"]) == ps["team"] else 0,
+                })
+
+        # Validation logging per friend
+        report = M.validate_match_metrics(match, puuid)
+        if report and not report.get("clean"):
+            logger.warning("Validação partida %s jogador %s: %s",
+                           meta["match_id"][:8], puuid[:8], report.get("issues"))
 
     kill_rows = [{
         "match_id": meta["match_id"], "round_id": k["round"], "order_in_round": k["order_in_round"],
@@ -65,10 +101,13 @@ def process_match(match, friend_puuids):
         "vx": k["vx"], "vy": k["vy"],
     } for k in kills_ann]
 
+    spatial_rows = extract_spatial_events(match, friend_puuids)
+
     raw_gz = db.compress_raw(M.strip_raw(match))
     return {
         "meta": meta, "raw_gz": raw_gz, "match_players": mp_rows,
         "derived": derived, "round_rows": round_rows, "kill_rows": kill_rows,
+        "spatial_rows": spatial_rows,
         "friends_here": len(friends_here),
     }
 
@@ -91,7 +130,8 @@ def ingest_user(user, friend_puuids):
             continue
         bundle = process_match(match, friend_puuids)
         db.save_match_bundle(bundle["meta"], bundle["raw_gz"], bundle["match_players"],
-                             bundle["derived"], bundle["round_rows"], bundle["kill_rows"])
+                             bundle["derived"], bundle["round_rows"], bundle["kill_rows"],
+                             bundle.get("spatial_rows", []))
         new += 1
         logger.info("Partida %s gravada (%d amigos).", mid, bundle["friends_here"])
     return new

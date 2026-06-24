@@ -54,6 +54,10 @@ def player_overview(puuid):
     frounds = sf("rounds") or 1
     wins = s("won")
     shots = s("headshots") + s("bodyshots") + s("legshots")
+    # ACS  = sum(score) / sum(rounds)  — matches Valorant Tracker (avg combat score per round)
+    # ADR  = sum(damage) / sum(rounds)
+    # HS%  = headshots / (headshots + bodyshots + legshots) × 100  — hit-based, same as tracker.gg
+    # KAST = rounds_with_(kill OR assist OR survived OR traded) / total_full_rounds × 100
 
     # Clutches agregados por tamanho (só full).
     clutch_by_size = defaultdict(lambda: {"att": 0, "won": 0})
@@ -523,6 +527,114 @@ def leaderboard(users):
     for i, r in enumerate(board, 1):
         r["rank"] = i
     return board
+
+
+# ---------------------------------------------------------------------------
+# Spatial (extended positional heatmap with event context)
+# ---------------------------------------------------------------------------
+def player_spatial(puuid, map_name=None):
+    """Position clusters for a player from kill-frame snapshots."""
+    rows = db.spatial_events_for_puuid(puuid)
+    if map_name:
+        match_ids = {r["match_id"] for r in db.derived_for_puuid(puuid) if r["map"] == map_name}
+        rows = [r for r in rows if r["match_id"] in match_ids]
+    positions = [{"x": r["x"], "y": r["y"], "event_type": r["event_type"]}
+                 for r in rows if r["x"] is not None]
+    return {"map": map_name, "positions": positions, "count": len(positions)}
+
+
+# ---------------------------------------------------------------------------
+# Group correlation engine
+# ---------------------------------------------------------------------------
+def group_correlation(puuids, info_by_puuid):
+    """For each map+agent_combo played by the EXACT group, computes win rate.
+    Also surfaces first-blood impact on match outcome."""
+    pset = set(puuids)
+    roster_set = set(info_by_puuid.keys()) | pset
+    by_match = _match_index(roster_set)
+
+    together = []
+    for mid, teams in by_match.items():
+        for team, members in teams.items():
+            mp = {m["puuid"]: m for m in members}
+            if set(mp.keys()) == pset:
+                together.append({
+                    "match_id": mid,
+                    "won": bool(members[0]["won"]),
+                    "map": members[0].get("map") or "?",
+                    "agents": {p: mp[p].get("agent") or "?" for p in pset},
+                })
+                break
+
+    combo_map = defaultdict(lambda: {"g": 0, "w": 0})
+    fb_impact = defaultdict(lambda: {"g": 0, "w": 0})
+
+    member_derived = {p: {r["match_id"]: r for r in db.derived_for_puuid(p)} for p in pset}
+
+    for t in together:
+        mid = t["match_id"]
+        agents_sorted = " + ".join(sorted(t["agents"].values()))
+        key = (t["map"], agents_sorted)
+        combo_map[key]["g"] += 1
+        combo_map[key]["w"] += 1 if t["won"] else 0
+
+        had_fb = any(
+            (member_derived[p].get(mid) or {}).get("first_bloods", 0) > 0
+            for p in pset
+        )
+        fb_key = "fb_secured" if had_fb else "fb_lost"
+        fb_impact[fb_key]["g"] += 1
+        fb_impact[fb_key]["w"] += 1 if t["won"] else 0
+
+    return {
+        "total_together": len(together),
+        "map_agent_combos": [
+            {
+                "map": k[0], "agent_combo": k[1],
+                "games": v["g"], "wins": v["w"],
+                "win_rate": _rate(v["w"], v["g"]),
+                "confidence": _conf(v["g"], MIN_AGENT),
+            }
+            for k, v in sorted(combo_map.items(), key=lambda x: x[1]["g"], reverse=True)
+        ][:12],
+        "first_blood_impact": {
+            k: {"games": v["g"], "win_rate": _rate(v["w"], v["g"])}
+            for k, v in fb_impact.items()
+        },
+    }
+
+
+def round_correlation(puuids):
+    """Round-level analysis: correlates number of group members alive at round end
+    with match win rate. More survivors alive together = stronger closing."""
+    pset = set(puuids)
+    all_rounds = {}
+    for p in pset:
+        for r in db.round_rows_for_puuid(p):
+            key = (r["match_id"], r["round_id"])
+            if key not in all_rounds:
+                all_rounds[key] = {"alive": set(), "match_id": r["match_id"]}
+            if r["alive_end"]:
+                all_rounds[key]["alive"].add(p)
+
+    match_won = {}
+    for p in pset:
+        for r in db.derived_for_puuid(p):
+            match_won[r["match_id"]] = r.get("won", 0)
+
+    by_survivors = defaultdict(lambda: {"rounds": 0, "total": 0})
+    for (mid, _rid), data in all_rounds.items():
+        n_alive = len(data["alive"] & pset)
+        if n_alive == 0:
+            continue
+        by_survivors[n_alive]["rounds"] += 1
+        if match_won.get(mid):
+            by_survivors[n_alive]["total"] += 1
+
+    return {
+        str(n): {"rounds": v["rounds"], "match_wins_when": v["total"]}
+        for n, v in sorted(by_survivors.items())
+    }
 
 
 # ---------------------------------------------------------------------------
