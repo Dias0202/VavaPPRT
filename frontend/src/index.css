@@ -286,6 +286,9 @@ main.page { padding: 32px 0 64px; }
   position: absolute; left: 0; top: 0; bottom: 0;
   background: linear-gradient(90deg, var(--red-dim), var(--red));
 }
+.bar > span.win {
+  background: linear-gradient(90deg, var(--teal-dim), var(--teal));
+}
 
 /* ---------- Match list (scoreboard) ---------- */
 .match {

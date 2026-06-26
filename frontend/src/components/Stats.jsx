@@ -47,6 +47,7 @@ export function AgentRow({ agent, max }) {
         <div className="mono" style={{ fontSize: 15 }}>{agent.win_rate}%</div>
         <div className="bar" style={{ marginTop: 6 }}>
           <motion.span
+            className={agent.win_rate >= 50 ? "win" : ""}
             initial={{ width: 0 }}
             animate={{ width: `${pct}%` }}
             transition={{ duration: 0.9, ease: [0.4, 0, 0.2, 1] }}
