@@ -1,6 +1,20 @@
-# Blueprint do Render — cria o backend já configurado.
-# Uso: render.com → New + → Blueprint → conecte este repo. O Render lê este
-# arquivo e pede só os valores marcados como sync:false (os segredos).
+# Blueprint do Render — sobe a API e o banco de uma vez.
+#
+# Uso: render.com → New + → Blueprint → conecte este repositório.
+# O Render lê este arquivo, cria o Postgres, injeta a DATABASE_URL sozinho e
+# pergunta só o que é segredo (a chave da HenrikDev) e a URL do frontend.
+#
+# Por que o banco vem aqui e não no Supabase: assim é UM cadastro só, e a
+# DATABASE_URL nunca precisa ser copiada à mão. Se um dia quiser trocar por
+# Supabase (ou qualquer outro Postgres), basta remover o bloco `databases:`
+# abaixo, trocar o `fromDatabase` por `sync: false` e colar a URI de lá.
+
+databases:
+  - name: vavapprt-db
+    databaseName: vavapprt
+    user: vavapprt
+    plan: free
+
 services:
   - type: web
     name: vavapprt-api
@@ -14,13 +28,15 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"
-      - key: DATABASE_URL      # URI do Supabase (pooler, porta 6543)
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vavapprt-db
+          property: connectionString
+      - key: HENRIKDEV_API_KEY # Basic Key da HenrikDev — você cola no deploy
         sync: false
-      - key: HENRIKDEV_API_KEY # Basic Key da HenrikDev
-        sync: false
-      - key: JWT_SECRET        # gerado automaticamente pelo Render
+      - key: JWT_SECRET # gerado pelo Render, ninguém precisa inventar
         generateValue: true
-      - key: CORS_ORIGINS      # URL do Vercel, ex: https://vavapprt.vercel.app
-        sync: false
+      - key: CORS_ORIGINS
+        value: https://dias0202.github.io
       - key: DEFAULT_REGION
         value: na
