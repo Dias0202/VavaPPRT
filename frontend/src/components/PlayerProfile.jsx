@@ -2,19 +2,21 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { api } from "../lib/api";
 import { StatCard, AgentRow, MatchRow } from "./Stats";
-import { Conf, WrBar, ClutchGrid, InsightCard, Loader, Empty } from "./blocks";
+import { Conf, WrBar, ClutchGrid, InsightCard, Loader, Empty, Gauge } from "./blocks";
+import { MIN_MAP } from "../lib/gates";
 import Heatmap from "./Heatmap";
-import { Tendencia, Sessoes, Rank, PosPlant, Utilidade } from "./Progress";
+import { Tendencia, Sessoes, Rank, PosPlant, Utilidade, Verdict } from "./Progress";
 
 // Percentual que distingue "0%" de "sem amostra" (backfill não tem dado de lado).
 const pct = (v) => (v === null || v === undefined ? "—" : `${v}%`);
 
-const TABS = [
-  ["visao", "Visão"], ["tendencia", "Tendência"], ["rank", "Rank"],
-  ["sessoes", "Sessões"], ["combate", "Combate"], ["economia", "Economia"],
-  ["posplant", "Pós-plant"], ["mapas", "Mapas"], ["agentes", "Agentes"],
-  ["armas", "Armas"], ["utilidade", "Utilidade"],
-  ["insights", "Insights"], ["heatmap", "Heatmap"],
+// 13 abas numa fileira só não é navegação, é uma lista. Agrupadas por
+// pergunta: como estou indo / o que faço em round / onde e com quem / o que fazer.
+const TAB_GROUPS = [
+  ["Agora", [["visao", "Visão"], ["tendencia", "Tendência"], ["rank", "Rank"], ["sessoes", "Sessões"]]],
+  ["Round", [["combate", "Combate"], ["economia", "Economia"], ["posplant", "Pós-plant"]]],
+  ["Contexto", [["mapas", "Mapas"], ["agentes", "Agentes"], ["armas", "Armas"], ["utilidade", "Utilidade"], ["heatmap", "Heatmap"]]],
+  ["Ação", [["insights", "Insights"]]],
 ];
 
 const containerVariants = {
@@ -50,11 +52,25 @@ export default function PlayerProfile({ riotId, tagline }) {
       animate={{ opacity: 1 }}
       transition={{ duration: 0.3 }}
     >
-      <div className="tabs">
-        {TABS.map(([k, label]) => (
-          <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)}>{label}</button>
+      <Verdict riotId={riotId} tagline={tagline} ov={ov} />
+
+      <nav className="tabs" aria-label="Seções do perfil">
+        {TAB_GROUPS.map(([group, items]) => (
+          <div className="tab-group" key={group}>
+            <span className="lbl">{group}</span>
+            {items.map(([k, label]) => (
+              <button
+                key={k}
+                className={tab === k ? "active" : ""}
+                aria-current={tab === k ? "page" : undefined}
+                onClick={() => setTab(k)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         ))}
-      </div>
+      </nav>
       {tab === "visao" && <Visao ov={ov} riotId={riotId} tagline={tagline} />}
       {tab === "combate" && <Combate ov={ov} />}
       {tab === "economia" && <Economia ov={ov} />}
@@ -265,7 +281,9 @@ function Mapas({ rows }) {
               transition={{ delay: i * 0.05 }}
             >
               <td style={{ textAlign: "left", paddingLeft: 16 }} className="who">
-                <span className="u">{m.map}</span> <Conf level={m.confidence} n={m.matches} />
+                <span className="u">{m.map}</span>
+                {m.confidence !== "high" && <Conf level={m.confidence} n={m.matches} />}
+                <Gauge n={m.matches} floor={MIN_MAP} />
               </td>
               <td>{m.matches}</td>
               <td className={m.win_rate >= 50 ? "win" : "loss"}>{m.win_rate}%</td>

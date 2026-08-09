@@ -1,13 +1,99 @@
 // Blocos da dimensão temporal: tendência, sessões/tilt, curva de RR,
 // pós-plant e utilidade. O que responde "estou melhorando?".
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Conf, WrBar, Empty, StaggerList, StaggerItem } from "./blocks";
+import { Conf, WrBar, Empty, StaggerList, StaggerItem, Gauge } from "./blocks";
 import { StatCard } from "./Stats";
+import { MIN_SITE, MIN_TREND } from "../lib/gates";
+import { api } from "../lib/api";
 
 const fmt = (v, suffix = "") =>
   v === null || v === undefined ? "—" : `${v}${suffix}`;
 
 const signed = (v) => (v > 0 ? `+${v}` : `${v}`);
+
+// ---------------------------------------------------------------------------
+// Veredito — o herói do perfil.
+// Antes de qualquer número, uma frase: como você está indo e por quê. Sem isso
+// o perfil abre com oito cartões e deixa a leitura por conta do usuário.
+// ---------------------------------------------------------------------------
+export function Verdict({ riotId, tagline, ov }) {
+  const [rank, setRank] = useState(null);
+  const [trend, setTrend] = useState(null);
+
+  useEffect(() => {
+    let on = true;
+    api.rank(riotId, tagline).then((d) => on && setRank(d)).catch(() => {});
+    api.trend(riotId, tagline).then((d) => on && setTrend(d)).catch(() => {});
+    return () => { on = false; };
+  }, [riotId, tagline]);
+
+  const rr = rank?.available ? rank.net_rr_last20 : null;
+  const worst = trend?.available ? trend.declined?.[0] : null;
+  const best = trend?.available ? trend.improved?.[0] : null;
+
+  let dir = "flat";
+  let lede;
+  if (rr !== null && rank?.verdict !== "estável") {
+    dir = rr > 0 ? "up" : "down";
+    lede = (
+      <>
+        Você está <b>{rank.verdict}</b>: {signed(rr)} RR nas últimas{" "}
+        {rank.matches_last20} partidas.
+      </>
+    );
+  } else if (rank?.available) {
+    lede = (
+      <>
+        <b>Estável</b> em {rank.current.tier_name} — {signed(rr ?? 0)} RR nas
+        últimas {rank.matches_last20}.
+      </>
+    );
+  } else {
+    lede = (
+      <>
+        {ov.matches} partidas registradas, <b>{ov.win_rate}%</b> de vitória.
+      </>
+    );
+  }
+
+  // A justificativa é o que mais mudou, não uma lista.
+  let why = null;
+  if (worst) {
+    why = (
+      <>
+        O que mais caiu: <b>{worst.label}</b>, de {worst.previous} para{" "}
+        {worst.current}.
+        {best && <> Em compensação, {best.label.toLowerCase()} subiu para {best.current}.</>}
+      </>
+    );
+  } else if (best) {
+    why = <>Melhor movimento: <b>{best.label}</b>, de {best.previous} para {best.current}.</>;
+  } else if (trend && !trend.available) {
+    why = <>Ainda sem janela anterior cheia para comparar — {trend.reason}.</>;
+  }
+
+  return (
+    <motion.section
+      className={`verdict ${dir}`}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
+    >
+      <p className="lede">{lede}</p>
+      {why && <p className="why">{why}</p>}
+      {rank?.peak?.tier_name && (
+        <p className="why">
+          Pico histórico <b>{rank.peak.tier_name}</b>
+          {rank.peak.season && ` (${rank.peak.season})`}
+          {rank.current_act && (
+            <> · melhor deste ato <b>{rank.current_act.peak_tier_name}</b></>
+          )}
+        </p>
+      )}
+    </motion.section>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Tendência
@@ -78,8 +164,9 @@ export function Sessoes({ data }) {
               </span>
               <div style={{ flex: 1 }}>
                 <WrBar label="" value={c.win_rate} n={c.matches} />
+                <Gauge n={c.matches} floor={MIN_TREND} />
               </div>
-              <Conf level={c.confidence} n={c.matches} />
+              {c.confidence !== "high" && <Conf level={c.confidence} n={c.matches} />}
             </div>
           ))}
         </>
@@ -231,8 +318,9 @@ export function PosPlant({ data }) {
               <span style={{ width: 40, fontWeight: 700 }}>{s.site}</span>
               <div style={{ flex: 1 }}>
                 <WrBar label="" value={s.win_rate} n={s.plants} />
+                <Gauge n={s.plants} floor={MIN_SITE} />
               </div>
-              <Conf level={s.confidence} n={s.plants} />
+              {s.confidence !== "high" && <Conf level={s.confidence} n={s.plants} />}
             </div>
           ))}
         </>

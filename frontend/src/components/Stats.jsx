@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { Gauge } from "./blocks";
+import { MIN_AGENT } from "../lib/gates";
 
 export function StatCard({ label, value, suffix, tone }) {
   return (
@@ -41,6 +43,7 @@ export function AgentRow({ agent, max }) {
           <div className="mono muted" style={{ fontSize: 12 }}>
             {agent.matches} partidas · K/D {agent.kd} · ACS {agent.acs}
           </div>
+          <Gauge n={agent.matches} floor={MIN_AGENT} />
         </div>
       </div>
       <div style={{ textAlign: "right" }}>

@@ -6,6 +6,32 @@ export function Conf({ level, n }) {
   return <span className={`conf ${level === "high" ? "" : "low"}`}>{label}</span>;
 }
 
+/**
+ * Régua de amostra — a assinatura visual do produto.
+ *
+ * O princípio central é não vender ruído como insight. Um selo escrito
+ * "dados baixos" diz isso; uma régua deixa VER, e no mesmo lugar em toda a
+ * interface: o filete abaixo do número é preenchido na proporção n/piso.
+ * Cheio e ciano = amostra suficiente. Curto e cinza = ainda não conclua nada.
+ */
+export function Gauge({ n, floor, label }) {
+  const pct = Math.max(0, Math.min(100, floor > 0 ? (n / floor) * 100 : 0));
+  const full = n >= floor;
+  return (
+    <span
+      className={`gauge${full ? " full" : ""}`}
+      style={{ "--fill": `${pct}%` }}
+      role="img"
+      aria-label={
+        label ||
+        (full
+          ? `Amostra suficiente: ${n} de ${floor}`
+          : `Amostra insuficiente: ${n} de ${floor}`)
+      }
+    />
+  );
+}
+
 export function Eyebrow({ children }) {
   return <span className="eyebrow">{children}</span>;
 }
