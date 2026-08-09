@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { api } from "../lib/api";
-import { StatCard, AgentRow, MatchRow } from "./Stats";
+import { StatCard, AgentRow, MatchRow, WeaponIcon } from "./Stats";
 import { Conf, WrBar, ClutchGrid, InsightCard, Loader, Empty, Gauge } from "./blocks";
 import { MIN_MAP } from "../lib/gates";
 import Heatmap from "./Heatmap";
+import QueuePlan from "./QueuePlan";
 import { Tendencia, Sessoes, Rank, PosPlant, Utilidade, Verdict } from "./Progress";
 
 // Percentual que distingue "0%" de "sem amostra" (backfill não tem dado de lado).
@@ -129,35 +130,45 @@ function Visao({ ov, riotId, tagline }) {
     { label: "V — D", value: `${ov.wins} — ${ov.losses}` },
   ];
   return (
-    <>
-      <motion.div
-        className="stat-grid"
-        style={{ marginBottom: 24 }}
-        variants={containerVariants}
-        initial="hidden"
-        animate="visible"
-      >
-        {cards.map((card) => (
-          <motion.div key={card.label} variants={itemVariants}>
-            <StatCard {...card} />
-          </motion.div>
-        ))}
-      </motion.div>
-      <div className="section-title"><span className="eyebrow">Últimas partidas</span></div>
-      <Lazy fetcher={() => api.recent(riotId, tagline)} render={(rows) => (
-        rows.length
-          ? (
-            <motion.div variants={containerVariants} initial="hidden" animate="visible">
-              {rows.map((m) => (
-                <motion.div key={m.match_id} variants={itemVariants}>
-                  <MatchRow m={m} />
-                </motion.div>
-              ))}
+    <div className="split">
+      <div>
+        <motion.div
+          className="stat-grid"
+          variants={containerVariants}
+          initial="hidden"
+          animate="visible"
+        >
+          {cards.map((card) => (
+            <motion.div key={card.label} variants={itemVariants}>
+              <StatCard {...card} />
             </motion.div>
-          )
-          : <Empty>Sem partidas.</Empty>
-      )} />
-    </>
+          ))}
+        </motion.div>
+
+        <div className="section-title"><span className="eyebrow">Onde filar</span></div>
+        <Lazy fetcher={() => api.queuePlan()} render={(d) => <QueuePlan data={d} />} />
+      </div>
+
+      {/* Histórico fica à vista o tempo todo, não empurrado para o rodapé. */}
+      <aside className="rail">
+        <div className="section-title" style={{ marginTop: 0 }}>
+          <span className="eyebrow">Últimas partidas</span>
+        </div>
+        <Lazy fetcher={() => api.recent(riotId, tagline)} render={(rows) => (
+          rows.length
+            ? (
+              <motion.div variants={containerVariants} initial="hidden" animate="visible">
+                {rows.slice(0, 12).map((m) => (
+                  <motion.div key={m.match_id} variants={itemVariants}>
+                    <MatchRow m={m} />
+                  </motion.div>
+                ))}
+              </motion.div>
+            )
+            : <Empty>Sem partidas.</Empty>
+        )} />
+      </aside>
+    </div>
   );
 }
 
@@ -328,6 +339,7 @@ function Armas({ data }) {
           variants={{ hidden: { opacity: 0, x: -8 }, visible: { opacity: 1, x: 0 } }}
         >
           <div className="agent-name">
+            <WeaponIcon name={w.weapon} />
             <strong>{w.weapon}</strong>
             {w.hs_pct !== null && w.hs_pct !== undefined && (
               <span className="muted" style={{ marginLeft: 10, fontSize: 13 }}>

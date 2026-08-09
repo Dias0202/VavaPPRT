@@ -105,7 +105,9 @@ p { margin: 0 0 12px; }
 }
 
 /* ---------- Layout ---------- */
-.container { width: min(1180px, 100% - var(--pad) * 2); margin: 0 auto; }
+/* Painel de instrumentos usa a mesa inteira. Numa tela de 1440+ o conteúdo
+   preso em 1180px deixava faixas mortas dos dois lados. */
+.container { width: min(1720px, 100% - var(--pad) * 2); margin: 0 auto; }
 .page { padding: 34px 0 90px; }
 .page-head { margin-bottom: 26px; }
 .page-motion { min-height: 50vh; }
@@ -212,20 +214,22 @@ p { margin: 0 0 12px; }
 .conf.low { color: var(--dim); border-color: var(--rule); }
 
 /* ---------- Stat (o readout) ---------- */
+/* Borda por cartão, não a técnica de gap-de-1px: com 8 cartões a última linha
+   fica incompleta, e ali o fundo do grid aparecia como um bloco cinza vazio. */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
-  gap: 1px;
-  background: var(--rule);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  overflow: hidden;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
 }
 .stat {
   background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
   padding: 16px 18px 15px;
-  transition: background var(--dur) var(--ease);
+  height: 100%;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
+.stat:hover { border-color: var(--dim-2); }
 .stat:hover { background: var(--panel-2); }
 .stat .k {
   font-family: var(--mono);
@@ -252,6 +256,81 @@ p { margin: 0 0 12px; }
   vertical-align: baseline;
   margin-left: 1px;
 }
+
+/* ---------- Duas colunas: análise à esquerda, feed à direita ----------
+   Em tela larga a leitura melhora com o histórico sempre à vista, em vez de
+   empurrado para baixo de tudo. */
+.split {
+  display: grid;
+  gap: 22px;
+  align-items: start;
+}
+@media (min-width: 1180px) {
+  .split { grid-template-columns: minmax(0, 1fr) 400px; }
+  .split > .rail { position: sticky; top: 84px; }
+}
+.rail { min-width: 0; }
+.rail .match { grid-template-columns: 3px 34px 1fr auto; gap: 11px; }
+.rail .match .res { display: none; }
+.rail .match .map { font-size: 14px; }
+
+/* Grade de mapas: cartões com a arte oficial do mapa ao fundo. */
+.map-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 12px; }
+.map-card {
+  position: relative;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+  min-height: 132px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 14px 16px;
+  background: var(--panel);
+  transition: border-color var(--dur) var(--ease);
+}
+.map-card:hover { border-color: var(--dim-2); }
+.map-card > img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  opacity: 0.26;
+  filter: saturate(0.5);
+}
+.map-card::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(180deg, transparent 25%, var(--panel) 96%);
+}
+.map-card > * { position: relative; z-index: 1; }
+.map-card .name { font-family: var(--display); font-size: 19px; font-weight: 600; }
+.map-card .verdict-tag {
+  position: absolute; top: 12px; left: 16px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em;
+  text-transform: uppercase; padding: 3px 8px; border-radius: 2px;
+  border: 1px solid var(--rule); background: var(--ground); color: var(--dim);
+}
+.map-card .verdict-tag.filar { color: var(--signal); border-color: var(--signal-deep); }
+.map-card .verdict-tag.evitar { color: var(--warn); border-color: var(--warn-deep); }
+
+/* Seletor da rotação (admin). */
+.pool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.pool-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 13px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.pool-item:hover { border-color: var(--dim-2); }
+.pool-item.on { border-color: var(--signal-deep); background: color-mix(in srgb, var(--signal) 7%, var(--panel)); }
+.pool-item input { accent-color: var(--signal); width: 15px; height: 15px; }
+
+/* Ícone de arma: a silhueta oficial é bem mais larga que alta. */
+.weap-icon { object-fit: contain; object-position: left center; }
 
 /* ---------- Botões ---------- */
 .btn {

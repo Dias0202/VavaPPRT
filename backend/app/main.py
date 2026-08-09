@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import config, db, auth, analytics, ingest, progress
 from . import valorant_api as vapi
 from .schemas import (RegisterIn, LoginIn, TokenOut, MeOut, AddPlayerIn,
-                      GroupDetailIn, GoalIn, DeleteMeIn)
+                      GroupDetailIn, GoalIn, DeleteMeIn, MapPoolIn)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("api")
@@ -118,8 +118,11 @@ def register(body: RegisterIn, background: BackgroundTasks):
     puuid, acct_region = _account_puuid(riot_id, tagline)
 
     region = acct_region or body.region.strip() or "latam"
+    # Quem cria o grupo administra o grupo: sem isso ninguém pode definir a
+    # rotação de mapas e a configuração fica travada para sempre.
+    first_user = not db.get_all_users()
     db.create_user(username, auth.hash_password(body.password), riot_id, tagline,
-                   region, puuid=puuid)
+                   region, puuid=puuid, is_admin=1 if first_user else 0)
     user = db.get_user_by_username(username)
     # Onboarding (PDD §6): registro → backfill → perfil populado. Sem isto o
     # perfil fica vazio até o cron rodar (e no dev, para sempre).
@@ -436,6 +439,48 @@ def remove_tracked(riot_id: str, tagline: str, user=Depends(current_user)):
     purged = db.purge_puuid(m["puuid"])
     orphans = db.orphan_matches_cleanup()
     return {"status": "ok", "purged": purged, "orphan_matches_removed": orphans}
+
+
+# ---------------------------------------------------------------------------
+# Rotação de mapas (admin) + plano de fila
+# ---------------------------------------------------------------------------
+def require_admin(user=Depends(current_user)):
+    if not user.get("is_admin"):
+        raise HTTPException(403, "Só um administrador do grupo pode mudar isto.")
+    return user
+
+
+@app.get("/config/map-pool")
+def get_map_pool(user=Depends(current_user)):
+    """Rotação ativa. Lista vazia = sem filtro (todos os mapas)."""
+    return {"pool": analytics.get_map_pool(), "all_maps": analytics.all_maps()}
+
+
+@app.put("/admin/map-pool")
+def put_map_pool(body: MapPoolIn, user=Depends(require_admin)):
+    known = set(analytics.all_maps())
+    invalid = [m for m in body.maps if m not in known]
+    if invalid:
+        raise HTTPException(400, f"Mapa desconhecido: {', '.join(invalid)}.")
+    return {"pool": analytics.set_map_pool(body.maps)}
+
+
+@app.get("/group/queue-plan")
+def group_queue_plan(user=Depends(current_user)):
+    """Para cada mapa da rotação: filar, evitar, e quem leva qual agente."""
+    friend_puuids, info_by = _roster_info()
+    return analytics.queue_plan(friend_puuids, info_by)
+
+
+@app.get("/group/head-to-head/{ra}/{ta}/{rb}/{tb}")
+def group_head_to_head(ra: str, ta: str, rb: str, tb: str, user=Depends(current_user)):
+    ua = db.get_roster_member_by_riot(ra, ta.lstrip("#"))
+    ub = db.get_roster_member_by_riot(rb, tb.lstrip("#"))
+    if not ua or not ub or not ua.get("puuid") or not ub.get("puuid"):
+        raise HTTPException(404, "Jogador não encontrado.")
+    if not ua.get("consent") or not ub.get("consent"):
+        raise HTTPException(403, "Jogador não autorizou exibir dados.")
+    return analytics.head_to_head(ua["puuid"], ub["puuid"], ua["username"], ub["username"])
 
 
 @app.get("/validate/metrics")

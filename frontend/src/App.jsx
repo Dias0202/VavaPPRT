@@ -12,9 +12,16 @@ import Weekly from "./pages/Weekly";
 import Goals from "./pages/Goals";
 import Account from "./pages/Account";
 
+// A transição de página desliza, mas NÃO parte de opacity 0.
+//
+// Com opacity inicial 0 o conteúdo inteiro fica atrás de uma animação movida a
+// requestAnimationFrame: se o rAF for estrangulado (aba em segundo plano,
+// aparelho lento, CPU ocupada), a página fica em branco até ele voltar. O
+// deslize dá a mesma sensação e o texto continua legível se a animação
+// simplesmente não rodar.
 const pageVariants = {
-  initial: { opacity: 0, y: 12 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.25, ease: [0.4, 0, 0.2, 1] } },
+  initial: { y: 10 },
+  animate: { y: 0, transition: { duration: 0.25, ease: [0.4, 0, 0.2, 1] } },
   exit: { opacity: 0, y: -8, transition: { duration: 0.15 } },
 };
 

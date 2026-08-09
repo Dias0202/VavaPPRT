@@ -54,6 +54,11 @@ class GoalIn(BaseModel):
     direction: str = "up"
 
 
+class MapPoolIn(BaseModel):
+    """Rotação ativa de mapas. Lista vazia = sem filtro (todos)."""
+    maps: list[str] = Field(default_factory=list, max_length=20)
+
+
 class DeleteMeIn(BaseModel):
     """Opt-out exige confirmação explícita: a ação é irreversível."""
     password: str

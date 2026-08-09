@@ -693,6 +693,12 @@ def get_raw_match(match_id):
         conn.close()
 
 
+def distinct_maps():
+    """Mapas que já apareceram nas partidas ingeridas."""
+    return [r["map"] for r in _query(
+        "SELECT DISTINCT map FROM matches WHERE map IS NOT NULL ORDER BY map")]
+
+
 def match_ids_with_raw():
     """Toda partida que guardou raw — base do recompute offline."""
     return [r["match_id"] for r in _query(

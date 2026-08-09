@@ -1,9 +1,76 @@
 // Conta e privacidade. O opt-out cumpre o compromisso do PLANO_ANALYTICS §7:
 // apagar puuid e todos os dados associados, a pedido da própria pessoa.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
+
+/**
+ * Rotação de mapas — só admin.
+ *
+ * Ver os 12 mapas do jogo ao mesmo tempo não ajuda a decidir nada: metade não
+ * está na fila competitiva. Quem administra o grupo marca o que está no ar, e
+ * perfil, insights e plano de fila passam a falar só desses.
+ */
+function MapPoolAdmin() {
+  const [all, setAll] = useState([]);
+  const [pool, setPool] = useState([]);
+  const [saved, setSaved] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.mapPool()
+      .then((d) => { setAll(d.all_maps); setPool(d.pool); setSaved(d.pool); })
+      .catch((e) => setErr(e.message));
+  }, []);
+
+  const dirty = saved !== null && JSON.stringify([...pool].sort()) !== JSON.stringify([...saved].sort());
+  const toggle = (m) =>
+    setPool((p) => (p.includes(m) ? p.filter((x) => x !== m) : [...p, m]));
+
+  async function save() {
+    setBusy(true);
+    setErr("");
+    try {
+      const d = await api.setMapPool(pool);
+      setPool(d.pool);
+      setSaved(d.pool);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <h3 className="section-h">Rotação de mapas · admin</h3>
+      {err && <div className="error-box">{err}</div>}
+      <p className="muted" style={{ maxWidth: 620, marginBottom: 14 }}>
+        Marque os mapas que estão na fila competitiva. As análises de mapa e o
+        plano de fila mostram só estes. Sem nenhum marcado, mostramos todos.
+      </p>
+      <div className="pool-grid" style={{ marginBottom: 16 }}>
+        {all.map((m) => (
+          <label key={m} className={`pool-item ${pool.includes(m) ? "on" : ""}`}>
+            <input type="checkbox" checked={pool.includes(m)} onChange={() => toggle(m)} />
+            <span>{m}</span>
+          </label>
+        ))}
+      </div>
+      <div className="row">
+        <button className="btn" disabled={!dirty || busy} onClick={save}>
+          {busy ? "Salvando…" : "Salvar rotação"}
+        </button>
+        {dirty && <span className="muted" style={{ fontSize: 13 }}>alterações não salvas</span>}
+        {!dirty && saved?.length > 0 && (
+          <span className="muted" style={{ fontSize: 13 }}>{saved.length} mapas na rotação</span>
+        )}
+      </div>
+    </>
+  );
+}
 
 export default function Account() {
   const { user, logout } = useAuth();
@@ -41,6 +108,8 @@ export default function Account() {
           Região: <b>{user?.region?.toUpperCase()}</b>
         </p>
       </div>
+
+      {user?.is_admin && <MapPoolAdmin />}
 
       <h3 className="section-h">Privacidade</h3>
       <p className="muted" style={{ maxWidth: 620, marginBottom: 16 }}>

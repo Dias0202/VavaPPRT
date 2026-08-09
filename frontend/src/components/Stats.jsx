@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Gauge } from "./blocks";
 import { MIN_AGENT } from "../lib/gates";
+import { useAgentIcon, useWeaponIcon } from "../lib/assets";
 
 export function StatCard({ label, value, suffix, tone }) {
   return (
@@ -61,9 +62,6 @@ export function AgentRow({ agent, max }) {
   );
 }
 
-const ASSET = "https://valorant-api.com/v1/agents?isPlayableCharacter=true";
-let _agentMap = null;
-
 export function AgentAvatar({ name, size = 40, cls = "av" }) {
   const src = useAgentIcon(name);
   if (!src) return <div className={cls} style={{ width: size, height: size }} />;
@@ -73,6 +71,7 @@ export function AgentAvatar({ name, size = 40, cls = "av" }) {
       style={{ width: size, height: size }}
       src={src}
       alt={name}
+      loading="lazy"
       initial={{ opacity: 0, scale: 0.85 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.2 }}
@@ -80,27 +79,22 @@ export function AgentAvatar({ name, size = 40, cls = "av" }) {
   );
 }
 
-function useAgentIcon(name) {
-  const [src, setSrc] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    async function resolve() {
-      if (!_agentMap) {
-        try {
-          const r = await fetch(ASSET);
-          const j = await r.json();
-          _agentMap = {};
-          for (const a of j.data || []) _agentMap[a.displayName.toLowerCase()] = a.displayIcon;
-        } catch {
-          _agentMap = {};
-        }
-      }
-      if (alive) setSrc(_agentMap[(name || "").toLowerCase()] || null);
-    }
-    resolve();
-    return () => { alive = false; };
-  }, [name]);
-  return src;
+/** Ícone da arma. O silhueta oficial é bem mais largo que alto — daí o box. */
+export function WeaponIcon({ name, width = 92, height = 34 }) {
+  const src = useWeaponIcon(name);
+  if (!src) return <div className="weap-icon" style={{ width, height }} />;
+  return (
+    <motion.img
+      className="weap-icon"
+      style={{ width, height }}
+      src={src}
+      alt={name}
+      loading="lazy"
+      initial={{ opacity: 0, x: -6 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.22 }}
+    />
+  );
 }
 
 export function MatchRow({ m }) {

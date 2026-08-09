@@ -87,6 +87,13 @@ export const api = {
   // Relatório semanal do grupo
   weekly: () => request("/group/weekly"),
 
+  // Rotação de mapas + plano de fila
+  mapPool: () => request("/config/map-pool"),
+  setMapPool: (maps) => request("/admin/map-pool", { method: "PUT", body: { maps } }),
+  queuePlan: () => request("/group/queue-plan"),
+  headToHead: (ra, ta, rb, tb) =>
+    request(`/group/head-to-head/${encodeURIComponent(ra)}/${encodeURIComponent(ta)}/${encodeURIComponent(rb)}/${encodeURIComponent(tb)}`),
+
   // Opt-out
   deleteMe: (password) =>
     request("/me", { method: "DELETE", body: { password, confirm: "APAGAR" } }),

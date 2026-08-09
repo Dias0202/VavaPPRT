@@ -126,11 +126,60 @@ def player_overview(puuid):
 # ---------------------------------------------------------------------------
 # Por mapa
 # ---------------------------------------------------------------------------
-def player_maps(puuid):
+# Catálogo-semente de mapas competitivos. A ROTAÇÃO ativa é escolhida pelo
+# admin do grupo (app_config: map_pool) — não faz sentido analisar mapa que
+# ninguém pode filar hoje.
+KNOWN_MAPS = ["Ascent", "Bind", "Breeze", "Fracture", "Haven", "Icebox", "Lotus",
+              "Pearl", "Split", "Sunset", "Abyss", "Corrode", "Summit"]
+
+MAP_POOL_KEY = "map_pool"
+
+
+def all_maps():
+    """Semente + o que realmente apareceu nas partidas do grupo.
+
+    Lista fixa envelhece: a Riot lança mapa novo e ele fica invisível para o
+    admin, que não consegue pô-lo na rotação. Unindo com o que o banco já viu,
+    mapa novo aparece sozinho na primeira partida ingerida."""
+    seen = [m for m in db.distinct_maps() if m]
+    return sorted(dict.fromkeys(KNOWN_MAPS + seen))
+
+
+def get_map_pool():
+    """Mapas da rotação ativa. Vazio/ausente = todos (nada filtrado)."""
+    raw = db.get_config(MAP_POOL_KEY)
+    if not raw:
+        return []
+    try:
+        pool = json.loads(raw)
+        return [m for m in pool if isinstance(m, str)]
+    except ValueError:
+        return []
+
+
+def set_map_pool(maps):
+    valid = set(all_maps())
+    clean = [m for m in dict.fromkeys(maps) if m in valid]
+    db.set_config(MAP_POOL_KEY, json.dumps(clean))
+    return clean
+
+
+def in_pool(map_name, pool=None):
+    pool = get_map_pool() if pool is None else pool
+    return not pool or map_name in pool
+
+
+def player_maps(puuid, only_pool=True):
+    """Aproveitamento por mapa. Por padrão só os mapas da rotação ativa —
+    saber que você vai bem num mapa fora do pool não ajuda a filar hoje."""
     rows = db.derived_for_puuid(puuid)
+    pool = get_map_pool() if only_pool else []
     by = defaultdict(list)
     for r in rows:
-        by[r["map"] or "?"].append(r)
+        mp = r["map"] or "?"
+        if pool and mp not in pool:
+            continue
+        by[mp].append(r)
     out = []
     for mp, rs in by.items():
         n = len(rs)
@@ -197,7 +246,9 @@ def player_weapons(puuid):
     kills = [k for k in db.kills_for_puuid(puuid) if k["killer_puuid"] == puuid]
     by = defaultdict(int)
     for k in kills:
-        by[k["weapon"] or "?"] += 1
+        # Abate sem arma nomeada é habilidade de agente ou faca — não é uma
+        # arma que exista no catálogo, e rotular "?" não diz nada a ninguém.
+        by[k["weapon"] or "Habilidade / faca"] += 1
     total = sum(by.values()) or 1
 
     aim = defaultdict(lambda: {"hs": 0, "bs": 0, "ls": 0, "rounds": 0})
@@ -756,6 +807,149 @@ def round_correlation(puuids):
     return {
         str(n): {"rounds": v["rounds"], "match_wins_when": v["total"]}
         for n, v in sorted(by_survivors.items())
+    }
+
+
+# ---------------------------------------------------------------------------
+# Plano de fila — o que o capitão informal precisa antes de abrir a fila
+# ---------------------------------------------------------------------------
+def queue_plan(friend_puuids, info_by_puuid):
+    """Para cada mapa da rotação: como o grupo vai nele e quem levar de agente.
+
+    É a pergunta que o PDD chama de "decisão de fila", agora respondível porque
+    a rotação ativa é conhecida: sem ela a lista misturava mapas que ninguém
+    pode filar hoje.
+    """
+    pool = get_map_pool() or all_maps()
+    puuids = list(friend_puuids)
+    if not puuids:
+        return {"pool": pool, "maps": []}
+
+    # Partidas em que 2+ amigos jogaram juntos, por mapa.
+    rows = db.all_match_players_for_puuids(puuids)
+    by_match = defaultdict(list)
+    for r in rows:
+        if r["puuid"] in friend_puuids:
+            by_match[r["match_id"]].append(r)
+
+    per_map = defaultdict(lambda: {"games": 0, "wins": 0, "solo": 0, "solo_wins": 0})
+    agent_map = defaultdict(lambda: defaultdict(lambda: {"n": 0, "w": 0}))
+    for mid, friends in by_match.items():
+        mp = friends[0].get("map") or "?"
+        won = bool(friends[0].get("won"))
+        if len(friends) >= 2:
+            per_map[mp]["games"] += 1
+            per_map[mp]["wins"] += 1 if won else 0
+        else:
+            per_map[mp]["solo"] += 1
+            per_map[mp]["solo_wins"] += 1 if won else 0
+        for f in friends:
+            a = agent_map[mp][(f["puuid"], f.get("agent") or "?")]
+            a["n"] += 1
+            a["w"] += 1 if f.get("won") else 0
+
+    out = []
+    for mp in pool:
+        st = per_map.get(mp, {"games": 0, "wins": 0, "solo": 0, "solo_wins": 0})
+        n = st["games"]
+        wr = _rate(st["wins"], n) if n else None
+        # melhor agente por pessoa nesse mapa, com piso de amostra
+        picks = []
+        for (puuid, agent), v in agent_map.get(mp, {}).items():
+            if v["n"] < MIN_AGENT or agent == "?":
+                continue
+            info = info_by_puuid.get(puuid) or {}
+            picks.append({"player": info.get("username") or info.get("riot_id"),
+                          "agent": agent, "games": v["n"],
+                          "win_rate": _rate(v["w"], v["n"])})
+        picks.sort(key=lambda p: (p["win_rate"], p["games"]), reverse=True)
+
+        # Enquanto o grupo não tem partidas juntas suficientes, o palpite útil é
+        # o desempenho individual. A base fica explícita para não dar a
+        # entender que o número é do grupo.
+        solo_wr = _rate_or_none(st["solo_wins"], st["solo"])
+        if n >= MIN_MAP:
+            basis, basis_n, basis_wr = "grupo", n, wr
+        elif st["solo"] >= MIN_MAP:
+            basis, basis_n, basis_wr = "individual", st["solo"], solo_wr
+        else:
+            basis, basis_n, basis_wr = "sem amostra", max(n, st["solo"]), None
+
+        if basis_wr is None:
+            verdict = "sem amostra"
+        elif basis_wr >= 55:
+            verdict = "filar"
+        elif basis_wr < 45:
+            verdict = "evitar"
+        else:
+            verdict = "neutro"
+
+        out.append({
+            "map": mp, "games": n, "wins": st["wins"], "win_rate": wr,
+            "confidence": _conf(basis_n, MIN_MAP), "verdict": verdict,
+            "basis": basis, "basis_games": basis_n, "basis_win_rate": basis_wr,
+            "solo_games": st["solo"], "solo_win_rate": solo_wr,
+            "picks": picks[:5],
+        })
+
+    order = {"filar": 0, "neutro": 1, "sem amostra": 2, "evitar": 3}
+    out.sort(key=lambda m: (order[m["verdict"]], -(m["basis_win_rate"] or 0)))
+    return {"pool": pool, "maps": out}
+
+
+# ---------------------------------------------------------------------------
+# Confronto direto entre dois amigos
+# ---------------------------------------------------------------------------
+def head_to_head(pa, pb, name_a, name_b):
+    """Compara dois membros do grupo métrica a métrica. Puro bragging rights —
+    e é o que mais faz gente abrir a plataforma."""
+    def stats(puuid):
+        rows = db.derived_for_puuid(puuid)
+        full = [r for r in rows if r.get("full_data")]
+        n = len(rows) or 1
+        rounds = sum(r.get("rounds") or 0 for r in rows) or 1
+        frounds = sum(r.get("rounds") or 0 for r in full) or 1
+        shots = sum((r.get("headshots") or 0) + (r.get("bodyshots") or 0)
+                    + (r.get("legshots") or 0) for r in rows)
+        return {
+            "matches": len(rows),
+            "win_rate": _rate(sum(r.get("won") or 0 for r in rows), len(rows) or 1),
+            "kd": _kd(sum(r.get("kills") or 0 for r in rows),
+                      sum(r.get("deaths") or 0 for r in rows)),
+            "acs": round(sum(r.get("score") or 0 for r in rows) / rounds, 0),
+            "adr": round(sum(r.get("damage") or 0 for r in rows) / rounds, 1),
+            "hs_pct": _rate(sum(r.get("headshots") or 0 for r in rows), shots),
+            "kast": _rate(sum(r.get("kast_rounds") or 0 for r in full), frounds) if full else None,
+            "fb_per_match": round(sum(r.get("first_bloods") or 0 for r in full) / len(full), 1) if full else None,
+        }
+
+    a, b = stats(pa), stats(pb)
+    labels = {"win_rate": "Vitória", "kd": "K/D", "acs": "ACS", "adr": "ADR",
+              "hs_pct": "HS%", "kast": "KAST", "fb_per_match": "First bloods/jogo"}
+    rows = []
+    wins_a = wins_b = 0
+    for key, label in labels.items():
+        va, vb = a.get(key), b.get(key)
+        if va is None or vb is None:
+            continue
+        leader = "a" if va > vb else "b" if vb > va else "tie"
+        wins_a += leader == "a"
+        wins_b += leader == "b"
+        rows.append({"metric": key, "label": label, "a": va, "b": vb, "leader": leader})
+
+    # Partidas em que os dois jogaram juntos.
+    ids_a = {r["match_id"] for r in db.derived_for_puuid(pa)}
+    together = [r for r in db.derived_for_puuid(pb) if r["match_id"] in ids_a]
+    tog_wins = sum(r.get("won") or 0 for r in together)
+
+    return {
+        "a": {"name": name_a, "matches": a["matches"], **{k: a[k] for k in labels if k in a}},
+        "b": {"name": name_b, "matches": b["matches"], **{k: b[k] for k in labels if k in b}},
+        "rows": rows,
+        "score": {"a": wins_a, "b": wins_b},
+        "together": {"games": len(together), "wins": tog_wins,
+                     "win_rate": _rate_or_none(tog_wins, len(together)),
+                     "confidence": _conf(len(together), MIN_DUO)},
     }
 
 
