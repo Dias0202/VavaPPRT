@@ -1,0 +1,26 @@
+# Blueprint do Render — cria o backend já configurado.
+# Uso: render.com → New + → Blueprint → conecte este repo. O Render lê este
+# arquivo e pede só os valores marcados como sync:false (os segredos).
+services:
+  - type: web
+    name: vavapprt-api
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: DATABASE_URL      # URI do Supabase (pooler, porta 6543)
+        sync: false
+      - key: HENRIKDEV_API_KEY # Basic Key da HenrikDev
+        sync: false
+      - key: JWT_SECRET        # gerado automaticamente pelo Render
+        generateValue: true
+      - key: CORS_ORIGINS      # URL do Vercel, ex: https://vavapprt.vercel.app
+        sync: false
+      - key: DEFAULT_REGION
+        value: na

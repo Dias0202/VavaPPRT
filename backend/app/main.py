@@ -46,6 +46,28 @@ def current_user(authorization: str = Header(default="")):
     return user
 
 
+def _account_puuid(riot_id, tagline):
+    """Valida um Riot ID na HenrikDev e devolve o puuid, ou erra com motivo claro."""
+    if not config.HENRIKDEV_API_KEY:
+        raise HTTPException(503, "HENRIKDEV_API_KEY não configurada no servidor — "
+                                 "sem ela não é possível validar Riot IDs nem baixar partidas.")
+    acc = vapi.fetch_account(riot_id, tagline)
+    if not isinstance(acc, dict):
+        raise HTTPException(502, "Resposta inesperada da API da Valorant.")
+    status = acc.get("status")
+    if status == 404:
+        raise HTTPException(404, "Riot ID não encontrado no Valorant.")
+    if status in (401, 403):
+        raise HTTPException(503, "Chave da HenrikDev inválida ou sem permissão (HTTP %s)." % status)
+    if status == 429:
+        raise HTTPException(503, "Rate limit da HenrikDev atingido. Tente de novo em 1 minuto.")
+    puuid = (acc.get("data") or {}).get("puuid")
+    if not puuid:
+        raise HTTPException(502, "Não foi possível validar o jogador agora: %s"
+                                 % (acc.get("error") or "resposta sem puuid"))
+    return puuid, (acc.get("data") or {}).get("region")
+
+
 def _resolve_puuid(riot_id, tagline):
     """Resolve um membro do roster (login ou rastreado) para puuid."""
     u = db.get_roster_member_by_riot(riot_id, tagline.lstrip("#"))
@@ -66,11 +88,23 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Saúde + diagnóstico de configuração (sem vazar segredos)."""
+    try:
+        roster = len(db.get_roster())
+        db_ok = True
+    except Exception:
+        roster, db_ok = 0, False
+    return {
+        "status": "ok" if (db_ok and config.HENRIKDEV_API_KEY) else "degraded",
+        "database": "postgres" if config.DATABASE_URL else "sqlite (dev)",
+        "database_ok": db_ok,
+        "henrikdev_key": bool(config.HENRIKDEV_API_KEY),
+        "roster_size": roster,
+    }
 
 
 @app.post("/auth/register", response_model=TokenOut)
-def register(body: RegisterIn):
+def register(body: RegisterIn, background: BackgroundTasks):
     username = body.username.strip()
     riot_id = body.riot_id.strip()
     tagline = body.tagline.strip().lstrip("#")
@@ -79,16 +113,17 @@ def register(body: RegisterIn):
     if db.riot_id_exists(riot_id, tagline):
         raise HTTPException(409, "Esse Riot ID já está cadastrado.")
 
-    acc = vapi.fetch_account(riot_id, tagline)
-    puuid = None
-    if isinstance(acc, dict):
-        if acc.get("status") == 404:
-            raise HTTPException(404, "Riot ID não encontrado no Valorant.")
-        puuid = (acc.get("data") or {}).get("puuid")
+    puuid, acct_region = _account_puuid(riot_id, tagline)
 
+    region = acct_region or body.region.strip() or "latam"
     db.create_user(username, auth.hash_password(body.password), riot_id, tagline,
-                   body.region.strip() or "latam", puuid=puuid)
+                   region, puuid=puuid)
     user = db.get_user_by_username(username)
+    # Onboarding (PDD §6): registro → backfill → perfil populado. Sem isto o
+    # perfil fica vazio até o cron rodar (e no dev, para sempre).
+    background.add_task(_ingest_new_player,
+                        {"riot_id": riot_id, "tagline": tagline,
+                         "region": region, "puuid": puuid})
     return TokenOut(access_token=auth.create_token(user["id"], username), username=username)
 
 
@@ -145,14 +180,9 @@ def add_player(body: AddPlayerIn, background: BackgroundTasks, user=Depends(curr
     if db.get_roster_member_by_riot(riot_id, tagline):
         raise HTTPException(409, "Esse jogador já está no grupo.")
 
-    acc = vapi.fetch_account(riot_id, tagline)
-    if not isinstance(acc, dict) or acc.get("status") == 404:
-        raise HTTPException(404, "Riot ID não encontrado no Valorant.")
-    puuid = (acc.get("data") or {}).get("puuid")
-    if not puuid:
-        raise HTTPException(502, "Não foi possível validar o jogador agora. Tente de novo.")
+    puuid, acct_region = _account_puuid(riot_id, tagline)
     # região real da conta, se vier
-    region = (acc.get("data") or {}).get("region") or region
+    region = acct_region or region
     if db.puuid_in_roster(puuid):
         raise HTTPException(409, "Esse jogador já está no grupo.")
 

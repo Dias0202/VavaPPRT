@@ -5,6 +5,9 @@ import { StatCard, AgentRow, MatchRow } from "./Stats";
 import { Conf, WrBar, ClutchGrid, InsightCard, Loader, Empty } from "./blocks";
 import Heatmap from "./Heatmap";
 
+// Percentual que distingue "0%" de "sem amostra" (backfill não tem dado de lado).
+const pct = (v) => (v === null || v === undefined ? "—" : `${v}%`);
+
 const TABS = [
   ["visao", "Visão"], ["combate", "Combate"], ["economia", "Economia"],
   ["mapas", "Mapas"], ["agentes", "Agentes"], ["armas", "Armas"],
@@ -258,7 +261,7 @@ function Mapas({ rows }) {
               </td>
               <td>{m.matches}</td>
               <td className={m.win_rate >= 50 ? "win" : "loss"}>{m.win_rate}%</td>
-              <td>{m.kd}</td><td>{m.acs}</td><td>{m.atk_wr}%</td><td>{m.def_wr}%</td>
+              <td>{m.kd}</td><td>{m.acs}</td><td>{pct(m.atk_wr)}</td><td>{pct(m.def_wr)}</td>
             </motion.tr>
           ))}
         </tbody>

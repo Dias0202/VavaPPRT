@@ -21,6 +21,15 @@ def _rate(part, whole, nd=1):
     return round(100 * part / whole, nd) if whole else 0.0
 
 
+def _rate_or_none(part, whole, nd=1):
+    """Como _rate, mas devolve None quando não há amostra.
+
+    0.0% e "sem dados" são coisas diferentes: partidas de backfill (resumo) não
+    têm rounds por lado, e exibir 0.0% ali afirmaria que o jogador nunca vence
+    no ataque — ruído vendido como fato (PDD §4, princípio 2)."""
+    return round(100 * part / whole, nd) if whole else None
+
+
 def _kd(k, d):
     return round(k / max(1, d), 2)
 
@@ -128,8 +137,8 @@ def player_maps(puuid):
             "win_rate": _rate(wins, n),
             "kd": _kd(sum(r["kills"] for r in rs), sum(r["deaths"] for r in rs)),
             "acs": round(sum(r["score"] for r in rs) / rounds, 0),
-            "atk_wr": _rate(sum(r["atk_wins"] for r in rs), sum(r["atk_rounds"] for r in rs)),
-            "def_wr": _rate(sum(r["def_wins"] for r in rs), sum(r["def_rounds"] for r in rs)),
+            "atk_wr": _rate_or_none(sum(r["atk_wins"] for r in rs), sum(r["atk_rounds"] for r in rs)),
+            "def_wr": _rate_or_none(sum(r["def_wins"] for r in rs), sum(r["def_rounds"] for r in rs)),
         })
     out.sort(key=lambda x: (x["matches"], x["win_rate"]), reverse=True)
     return out
@@ -156,7 +165,11 @@ def player_agents(puuid):
             "win_rate": wr, "kd": _kd(sum(r["kills"] for r in rs), sum(r["deaths"] for r in rs)),
             "acs": acs, "score_index": round(0.6 * wr + 0.4 * impact, 1), "tag": "neutro",
         })
-    out.sort(key=lambda x: (x["score_index"], x["matches"]), reverse=True)
+    # Ordena com os agentes que passam o piso de amostra SEMPRE na frente: um
+    # 100% de WR em 2 jogos não pode encabeçar a lista acima de um agente com
+    # amostra real (PDD §4, princípio 2).
+    out.sort(key=lambda x: (x["matches"] >= MIN_AGENT, x["score_index"], x["matches"]),
+             reverse=True)
     qualified = [a for a in out if a["matches"] >= MIN_AGENT]
     if qualified:
         qualified[0]["tag"] = "forte"

@@ -15,11 +15,15 @@ logging.basicConfig(
 
 import sys as _sys
 
-from . import db
+from . import config, db
 from .ingest import ingest_all, backfill_all
 
 
 def main():
+    if not config.HENRIKDEV_API_KEY:
+        print("ERRO: HENRIKDEV_API_KEY não definida — a HenrikDev recusa (401) "
+              "toda requisição sem chave. Nada a ingerir.", file=sys.stderr)
+        raise SystemExit(1)
     db.init_db()
     if "backfill" in _sys.argv[1:]:
         # backfill de resumo (histórico antigo). Rodar pontualmente, não no cron.

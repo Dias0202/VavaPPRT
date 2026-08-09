@@ -85,7 +85,12 @@ docs/                    PDD · SDD · DEPLOY_WEB · PLANO_ANALYTICS · PESQUISA
 
 ## Rodar localmente
 
-**Backend** (usa SQLite se `DATABASE_URL` não for definida):
+**Atalho (Windows):** `.\dev.ps1` na raiz — cria a venv, instala tudo, copia os
+`.env` de exemplo e sobe backend (`:8000`) e frontend (`:5173`) juntos.
+
+Manualmente:
+
+**Backend** (usa SQLite em `backend/data/app.db` se `DATABASE_URL` não for definida):
 ```bash
 cd backend
 python -m venv .venv && .venv\Scripts\activate      # Windows
@@ -101,6 +106,11 @@ npm install
 copy .env.example .env       # VITE_API_URL=http://localhost:8000
 npm run dev                  # http://localhost:5173
 ```
+
+`GET /health` responde o diagnóstico da configuração — banco em uso, se a chave
+da HenrikDev está presente e o tamanho do roster. `status: "degraded"` aponta o
+que falta. **Sem `HENRIKDEV_API_KEY` a API recusa tudo com 401**: não dá para
+cadastrar ninguém nem ingerir partidas.
 
 **Ingestão manual:**
 ```bash
