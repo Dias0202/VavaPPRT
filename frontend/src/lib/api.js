@@ -3,6 +3,17 @@
 const BASE = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/$/, "");
 const TOKEN_KEY = "vavapprt_token";
 
+// O site pode estar publicado antes de existir um backend. Nesse caso o
+// endereço da API ainda aponta para localhost, e a falha precisa dizer isso em
+// vez de "não foi possível falar com o servidor".
+const IS_LOCAL_API = /^https?:\/\/(localhost|127\.0\.0\.1)/.test(BASE);
+const PAGE_IS_REMOTE =
+  typeof window !== "undefined" &&
+  !/^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+
+export const apiBase = BASE;
+export const apiMisconfigured = IS_LOCAL_API && PAGE_IS_REMOTE;
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -24,7 +35,13 @@ async function request(path, { method = "GET", body } = {}) {
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new Error("Não foi possível falar com o servidor.");
+    if (apiMisconfigured) {
+      throw new Error(
+        "Este site ainda não está ligado a um servidor. Quem administra precisa " +
+          "definir a variável VITE_API_URL com o endereço da API e republicar."
+      );
+    }
+    throw new Error(`Não foi possível falar com o servidor (${BASE}).`);
   }
 
   let data = null;

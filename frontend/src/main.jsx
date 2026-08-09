@@ -7,7 +7,9 @@ import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <BrowserRouter>
+    {/* basename acompanha o base do Vite: em /VavaPPRT/ as rotas precisam do
+        prefixo, senão todo link cai no 404 do GitHub Pages. */}
+    <BrowserRouter basename={import.meta.env.BASE_URL}>
       <AuthProvider>
         <App />
       </AuthProvider>

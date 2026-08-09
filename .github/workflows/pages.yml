@@ -1,0 +1,67 @@
+name: Publicar frontend (GitHub Pages)
+
+# Publica a SPA em https://<usuario>.github.io/<repo>/ — grátis e sem conta
+# extra. O endereço da API vem da variável de repositório VITE_API_URL
+# (Settings → Secrets and variables → Actions → Variables). Enquanto ela não
+# existir o site sobe e explica que falta ligar o backend.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar dependências
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build
+        working-directory: frontend
+        env:
+          # Pages de projeto serve em /<repo>/, não na raiz.
+          VITE_BASE: /${{ github.event.repository.name }}/
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+        run: npm run build
+
+      - name: Fallback de SPA
+        # O Pages é estático e não tem rewrite: sem isto, recarregar em
+        # /grupo devolve o 404 do GitHub em vez da aplicação.
+        working-directory: frontend
+        run: cp dist/index.html dist/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
