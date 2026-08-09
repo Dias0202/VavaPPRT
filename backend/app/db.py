@@ -190,6 +190,25 @@ def init_db():
             PRIMARY KEY (puuid, match_id)
         )""")
 
+        # Rank por ato + pico histórico. O mmr-history só devolve ~20 partidas,
+        # então NÃO serve para "pico": isso vem de /v2/mmr (highest_rank).
+        cur.execute("""CREATE TABLE IF NOT EXISTS rank_profile (
+            puuid TEXT PRIMARY KEY,
+            current_tier INTEGER, current_tier_name TEXT, current_rr INTEGER,
+            elo INTEGER, games_needed INTEGER,
+            peak_tier INTEGER, peak_tier_name TEXT, peak_season TEXT,
+            updated_raw BIGINT
+        )""")
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS rank_season (
+            puuid TEXT, season TEXT,
+            games INTEGER, wins INTEGER,
+            final_tier INTEGER, final_tier_name TEXT,
+            peak_tier INTEGER, peak_tier_name TEXT,
+            is_old INTEGER,
+            PRIMARY KEY (puuid, season)
+        )""")
+
         # Metas de treino: fecham o loop do motor de insights.
         cur.execute(f"""CREATE TABLE IF NOT EXISTS player_goals (
             id {serial_pk},
@@ -739,6 +758,45 @@ def save_rank_history(rows):
 def rank_history_for_puuid(puuid, limit=200):
     return _query("SELECT * FROM rank_history WHERE puuid = ? "
                   "ORDER BY date_raw DESC LIMIT ?", (puuid, limit))
+
+
+PROFILE_COLS = ["puuid", "current_tier", "current_tier_name", "current_rr", "elo",
+                "games_needed", "peak_tier", "peak_tier_name", "peak_season", "updated_raw"]
+SEASON_COLS = ["puuid", "season", "games", "wins", "final_tier", "final_tier_name",
+               "peak_tier", "peak_tier_name", "is_old"]
+
+
+def save_rank_profile(row):
+    conn = get_connection()
+    try:
+        _upsert(conn, "rank_profile", PROFILE_COLS, ["puuid"],
+                tuple(row.get(c) for c in PROFILE_COLS), update=True)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_rank_seasons(rows):
+    if not rows:
+        return 0
+    conn = get_connection()
+    try:
+        for r in rows:
+            _upsert(conn, "rank_season", SEASON_COLS, ["puuid", "season"],
+                    tuple(r.get(c) for c in SEASON_COLS), update=True)
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
+
+
+def rank_profile_for_puuid(puuid):
+    rows = _query("SELECT * FROM rank_profile WHERE puuid = ?", (puuid,))
+    return rows[0] if rows else None
+
+
+def rank_seasons_for_puuid(puuid):
+    return _query("SELECT * FROM rank_season WHERE puuid = ? AND games > 0", (puuid,))
 
 
 # ---------------------------------------------------------------------------

@@ -265,6 +265,80 @@ def ingest_rank_history(user):
     return n
 
 
+# Escada de tiers do Valorant. 3-5 Ferro, 6-8 Bronze, ... 27 Radiante.
+TIER_NAMES = {0: "Unranked"}
+for _i, _div in enumerate(["Iron", "Bronze", "Silver", "Gold", "Platinum",
+                           "Diamond", "Ascendant", "Immortal"]):
+    for _d in (1, 2, 3):
+        TIER_NAMES[3 + _i * 3 + (_d - 1)] = f"{_div} {_d}"
+TIER_NAMES[27] = "Radiant"
+
+
+def tier_name(tier):
+    return TIER_NAMES.get(tier or 0, f"Tier {tier}")
+
+
+def ingest_mmr_profile(user):
+    """Rank atual, PICO HISTÓRICO e histórico por ato (fonte: /v2/mmr).
+
+    O `mmr-history` devolve só ~20 partidas — serve para a curva recente, nunca
+    para "pico". O pico de verdade e os atos passados só existem aqui.
+    """
+    puuid = user.get("puuid")
+    if not puuid:
+        return 0
+    data = api.fetch_mmr(user["riot_id"], user["tagline"], region=user.get("region"))
+    if isinstance(data, dict) and data.get("error"):
+        logger.warning("mmr %s#%s: %s", user["riot_id"], user["tagline"], data.get("error"))
+        return 0
+    d = data.get("data") or {}
+    cur = d.get("current_data") or {}
+    high = d.get("highest_rank") or {}
+
+    seasons = []
+    for season, s in (d.get("by_season") or {}).items():
+        if not isinstance(s, dict) or s.get("error") or not s.get("number_of_games"):
+            continue
+        peak = max((w.get("tier", 0) for w in (s.get("act_rank_wins") or [])), default=0)
+        final_tier = s.get("final_rank") or 0
+        # o pico do ato nunca pode ser menor que o rank em que ele terminou
+        peak = max(peak, final_tier)
+        seasons.append({
+            "puuid": puuid, "season": season,
+            "games": s.get("number_of_games") or 0, "wins": s.get("wins") or 0,
+            "final_tier": final_tier,
+            "final_tier_name": s.get("final_rank_patched") or tier_name(final_tier),
+            "peak_tier": peak, "peak_tier_name": tier_name(peak),
+            "is_old": 1 if s.get("old") else 0,
+        })
+    db.save_rank_seasons(seasons)
+
+    # Pico histórico: o maior entre o que a Henrik reporta e o melhor ato visto.
+    best_season = max(seasons, key=lambda s: s["peak_tier"], default=None)
+    peak_tier = high.get("tier") or 0
+    peak_name = high.get("patched_tier") or tier_name(peak_tier)
+    peak_season = high.get("season")
+    if best_season and best_season["peak_tier"] > peak_tier:
+        peak_tier = best_season["peak_tier"]
+        peak_name = best_season["peak_tier_name"]
+        peak_season = best_season["season"]
+
+    db.save_rank_profile({
+        "puuid": puuid,
+        "current_tier": cur.get("currenttier"),
+        "current_tier_name": cur.get("currenttierpatched"),
+        "current_rr": cur.get("ranking_in_tier"),
+        "elo": cur.get("elo"),
+        "games_needed": cur.get("games_needed_for_rating"),
+        "peak_tier": peak_tier, "peak_tier_name": peak_name, "peak_season": peak_season,
+        "updated_raw": int(datetime.now().timestamp()),
+    })
+    logger.info("MMR %s#%s: %s agora, pico %s (%s), %d atos.",
+                user["riot_id"], user["tagline"], cur.get("currenttierpatched"),
+                peak_name, peak_season, len(seasons))
+    return len(seasons)
+
+
 def deep_backfill_user(user, limit=50, friend_puuids=None):
     """Re-hidrata partidas de RESUMO em partidas COMPLETAS (1 chamada por
     partida, via /v4/match/{id}).
@@ -330,10 +404,11 @@ def ingest_all():
             total_new += ingest_user(u, friend_puuids)
         except Exception as e:
             logger.warning("Erro ao ingerir %s#%s: %s", u["riot_id"], u["tagline"], e, exc_info=True)
-        try:
-            ingest_rank_history(u)
-        except Exception as e:
-            logger.warning("Erro rank history %s#%s: %s", u["riot_id"], u["tagline"], e)
+        for fn, nome in ((ingest_rank_history, "rank history"), (ingest_mmr_profile, "mmr")):
+            try:
+                fn(u)
+            except Exception as e:
+                logger.warning("Erro %s %s#%s: %s", nome, u["riot_id"], u["tagline"], e)
 
     logger.info("Ingestão: %d jogadores, %d partidas novas.", len(roster), total_new)
     return {"players": len(roster), "new_matches": total_new}
@@ -348,6 +423,7 @@ def ingest_player_now(member, pages=5):
         new = ingest_user(member, roster_puuids)
         back = backfill_user(member, pages=pages)
         ingest_rank_history(member)
+        ingest_mmr_profile(member)
         logger.info("Jogador %s#%s: %d completas, %d resumo.",
                     member["riot_id"], member["tagline"], new, back)
         return {"full": new, "summary": back}

@@ -12,6 +12,7 @@ inútil para responder "melhorei?". Este módulo cobre a dimensão que faltava:
 O mesmo gating de amostragem do `analytics` vale aqui: sem janela cheia dos
 dois lados, a comparação não é publicada como conclusão.
 """
+import re
 import time
 from collections import defaultdict
 
@@ -200,31 +201,66 @@ def sessions(puuid, limit=15):
 # ---------------------------------------------------------------------------
 # Curva de rank / RR
 # ---------------------------------------------------------------------------
+def _season_sort_key(season):
+    """Ordena 'e11a4' cronologicamente (episódio, depois ato)."""
+    m = re.match(r"e(\d+)a(\d+)", season or "")
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
 def rank_curve(puuid, limit=100):
+    """Curva de RR recente + rank atual, pico do ato e PICO HISTÓRICO.
+
+    O `mmr-history` só devolve ~20 partidas: serve para a curva recente e nada
+    mais. Tirar "pico" dali reporta o topo de vinte jogos como se fosse o topo
+    da carreira. Pico e histórico por ato vêm de /v2/mmr.
+    """
+    profile = db.rank_profile_for_puuid(puuid)
+    seasons = db.rank_seasons_for_puuid(puuid)
     rows = db.rank_history_for_puuid(puuid, limit=limit)
-    if not rows:
-        return {"available": False, "points": [],
-                "note": "Sem histórico de RR ainda — o poller preenche na próxima execução."}
+    if not rows and not profile:
+        return {"available": False, "points": [], "seasons": [],
+                "note": "Sem histórico de rank ainda — o poller preenche na próxima execução."}
+
     pts = sorted(rows, key=lambda r: r.get("date_raw") or 0)
     points = [{
         "date_raw": p.get("date_raw"), "tier": p.get("tier"),
         "tier_name": p.get("tier_name"), "rr": p.get("rr"),
         "rr_change": p.get("rr_change"), "elo": p.get("elo"), "map": p.get("map"),
     } for p in pts]
+    recent = points[-20:]
+    net20 = sum(p["rr_change"] or 0 for p in recent)
 
-    last20 = points[-20:]
-    net20 = sum(p["rr_change"] or 0 for p in last20)
-    cur = points[-1]
-    peak = max(points, key=lambda p: (p.get("elo") or 0))
+    acts = sorted(seasons, key=lambda s: _season_sort_key(s["season"]))
+    act_list = [{
+        "season": s["season"], "games": s["games"], "wins": s["wins"],
+        "win_rate": A._rate(s["wins"], s["games"]),
+        "final_tier": s["final_tier"], "final_tier_name": s["final_tier_name"],
+        "peak_tier": s["peak_tier"], "peak_tier_name": s["peak_tier_name"],
+    } for s in acts]
+    current_act = act_list[-1] if act_list else None
+
+    if profile:
+        current = {"tier": profile.get("current_tier"),
+                   "tier_name": profile.get("current_tier_name"),
+                   "rr": profile.get("current_rr"), "elo": profile.get("elo")}
+        peak = {"tier": profile.get("peak_tier"),
+                "tier_name": profile.get("peak_tier_name"),
+                "season": profile.get("peak_season")}
+    else:
+        last = points[-1] if points else {}
+        current = {"tier": last.get("tier"), "tier_name": last.get("tier_name"),
+                   "rr": last.get("rr"), "elo": last.get("elo")}
+        peak = None
+
     return {
         "available": True,
         "points": points,
-        "current": {"tier": cur.get("tier"), "tier_name": cur.get("tier_name"),
-                    "rr": cur.get("rr"), "elo": cur.get("elo")},
-        "peak": {"tier_name": peak.get("tier_name"), "elo": peak.get("elo"),
-                 "date_raw": peak.get("date_raw")},
+        "current": current,
+        "peak": peak,
+        "current_act": current_act,
+        "seasons": act_list,
         "net_rr_last20": net20,
-        "matches_last20": len(last20),
+        "matches_last20": len(recent),
         "verdict": ("subindo" if net20 > 30 else "caindo" if net20 < -30 else "estável"),
     }
 

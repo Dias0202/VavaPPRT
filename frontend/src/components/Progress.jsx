@@ -118,19 +118,53 @@ export function Rank({ data }) {
   return (
     <>
       <div className="stat-grid" style={{ marginBottom: 20 }}>
-        <StatCard label={<>Rank atual</>} value={<>{data.current.tier_name || "—"}</>} />
-        <StatCard label={<>RR</>} value={<>{fmt(data.current.rr)}</>} />
+        <StatCard label="Rank agora" value={data.current.tier_name || "—"} />
+        <StatCard label="RR" value={fmt(data.current.rr)} />
         <StatCard
           label={`RR nas últimas ${data.matches_last20}`}
           value={signed(data.net_rr_last20)}
           tone={data.net_rr_last20 >= 0 ? "teal" : "red"}
         />
-        <StatCard label={<>Pico</>} value={<>{data.peak.tier_name || "—"}</>} />
+        {data.current_act && (
+          <StatCard
+            label={`Pico do ato ${data.current_act.season}`}
+            value={data.current_act.peak_tier_name}
+          />
+        )}
+        {data.peak?.tier_name && (
+          <StatCard
+            label={`Pico histórico${data.peak.season ? ` · ${data.peak.season}` : ""}`}
+            value={data.peak.tier_name}
+            tone="gold"
+          />
+        )}
       </div>
       <p className="muted" style={{ marginBottom: 14 }}>
         Tendência: <b>{data.verdict}</b>
       </p>
       {pts.length > 1 && <EloSpark points={pts} />}
+
+      {data.seasons?.length > 1 && (
+        <>
+          <h3 className="section-h">Por ato</h3>
+          <table className="tbl">
+            <thead>
+              <tr><th>Ato</th><th>Jogos</th><th>Vitória</th><th>Pico</th><th>Terminou</th></tr>
+            </thead>
+            <tbody>
+              {[...data.seasons].reverse().map((s) => (
+                <tr key={s.season}>
+                  <td className="mono">{s.season}</td>
+                  <td>{s.games}</td>
+                  <td>{s.win_rate}%</td>
+                  <td>{s.peak_tier_name}</td>
+                  <td>{s.final_tier_name}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
     </>
   );
 }
