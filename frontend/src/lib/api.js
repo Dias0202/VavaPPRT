@@ -29,19 +29,25 @@ async function request(path, { method = "GET", body } = {}) {
 
   let res;
   try {
+    // Timeout explícito: um backend inalcançável costuma PENDURAR o preflight
+    // em vez de recusar. Sem isto o botão fica travado sem dizer nada.
     res = await fetch(`${BASE}${path}`, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(20000),
     });
   } catch {
     if (apiMisconfigured) {
       throw new Error(
-        "Este site ainda não está ligado a um servidor. Quem administra precisa " +
-          "definir a variável VITE_API_URL com o endereço da API e republicar."
+        "Este site ainda não está ligado a um servidor. Quem administra o grupo " +
+          "precisa definir a variável VITE_API_URL com o endereço da API e republicar."
       );
     }
-    throw new Error(`Não foi possível falar com o servidor (${BASE}).`);
+    throw new Error(
+      `Servidor não respondeu (${BASE}). Ele pode estar hibernando — ` +
+        "tente de novo em alguns segundos."
+    );
   }
 
   let data = null;
