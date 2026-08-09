@@ -61,6 +61,13 @@ limit controlado.
 - **Grupos (2–5)**: detecção de quem joga junto, win rate, **lift juntos-vs-sozinho**,
   forma recente (V/D), melhores/piores mapas pra filar, composições, métricas
   profundas do grupo e **recomendação** em linguagem natural.
+- **Progresso no tempo** (não só retrato): **tendência** das últimas N partidas
+  vs as N anteriores, **curva de RR/elo**, **sessões** com detecção de queda de
+  rendimento (tilt) e **relatório semanal** do grupo.
+- **Pós-plant/retake/site**, **HS% por arma** e **uso de utilidade** por agente.
+- **Metas de treino**: as lacunas do motor de insights viram número com
+  acompanhamento.
+- **Opt-out**: apagar conta e todos os dados pessoais associados.
 
 ## Estrutura do repositório
 
@@ -115,9 +122,16 @@ cadastrar ninguém nem ingerir partidas.
 **Ingestão manual:**
 ```bash
 cd backend
-python -m app.poll            # baixa partidas novas (v4)
-python -m app.poll backfill 5 # backfill de histórico (resumo)
+python -m app.poll             # baixa partidas novas (v4) + curva de RR
+python -m app.poll backfill 5  # backfill de histórico (resumo, barato)
+python -m app.poll deep 50     # backfill PROFUNDO: promove resumo -> completa
+python -m app.poll recompute   # recalcula métricas do raw_gz (sem tocar na API)
 ```
+
+O `deep` é o que dá lastro às métricas profundas — sem ele, clutch/KAST/trade/
+economia/pós-plant saem só das ~5 partidas que o `/v4/matches` devolve. Custa 1
+requisição por partida (30 req/min); ao bater o rate limit ele para sozinho, é
+só rodar de novo. `GET /players/.../coverage` mostra quanto já tem lastro.
 
 ## Deploy
 

@@ -71,9 +71,13 @@ def fetch_matches_v4(name, tag, region=None, platform="pc", mode=None):
 
 
 def fetch_match_v4(match_id, region=None):
-    """Uma partida v4 por id (backfill profundo)."""
+    """Uma partida v4 por id (backfill profundo).
+
+    A região faz parte do path: /v4/match/{region}/{matchid}. Sem ela a Henrik
+    responde 404 para toda partida.
+    """
     region = region or config.DEFAULT_REGION
-    url = f"{HENRIK_BASE}/v4/match/{match_id}"
+    url = f"{HENRIK_BASE}/v4/match/{region}/{match_id}"
     return _get(url)
 
 
@@ -87,6 +91,13 @@ def fetch_lifetime(name, tag, region=None, page=1, size=20):
 def fetch_mmr(name, tag, region=None):
     region = region or config.DEFAULT_REGION
     url = f"{HENRIK_BASE}/v2/mmr/{region}/{name}/{tag}"
+    return _get(url)
+
+
+def fetch_mmr_history(name, tag, region=None):
+    """Curva de RR: uma entrada por partida ranqueada (tier, RR, ganho/perda)."""
+    region = region or config.DEFAULT_REGION
+    url = f"{HENRIK_BASE}/v1/mmr-history/{region}/{name}/{tag}"
     return _get(url)
 
 

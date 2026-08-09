@@ -14,11 +14,13 @@ export default function Layout() {
             <NavLink to="/" end>Painel</NavLink>
             <NavLink to="/ranking">Ranking</NavLink>
             <NavLink to="/grupo">Grupo</NavLink>
+            <NavLink to="/semana">Semana</NavLink>
+            <NavLink to="/metas">Metas</NavLink>
           </nav>
           <div className="spacer" />
-          <span className="muted mono" style={{ fontSize: 12 }}>
+          <NavLink to="/conta" className="muted mono" style={{ fontSize: 12 }}>
             {user?.riot_id}#{user?.tagline}
-          </span>
+          </NavLink>
           <button className="btn ghost" style={{ padding: "7px 14px" }} onClick={logout}>
             Sair
           </button>

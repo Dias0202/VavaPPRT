@@ -15,6 +15,10 @@ MIN_AGENT = 3
 MIN_DUO = 4
 MIN_CLUTCH = 5
 MIN_MATCHES = 3
+MIN_SITE = 5           # plants no mesmo site para o aproveitamento valer
+MIN_WEAPON_ROUNDS = 15  # rounds com a arma para o HS% dela valer
+MIN_TREND = 10          # partidas em cada janela para comparar tendência
+MIN_SESSION = 3         # partidas na sessão para ela entrar na análise de tilt
 
 
 def _rate(part, whole, nd=1):
@@ -182,14 +186,119 @@ def player_agents(puuid):
 # Armas (a partir dos kills)
 # ---------------------------------------------------------------------------
 def player_weapons(puuid):
+    """Kills por arma + HS% por arma.
+
+    Kills vêm da tabela `kills` (arma do abate). A precisão vem dos rounds:
+    `player_round_stats` guarda os tiros do round e a arma comprada nele, então
+    o HS% por arma é o agregado dos rounds em que aquela arma era a principal.
+    É aproximado por construção — o v4 não dá acerto-a-acerto por arma — mas
+    responde a pergunta que importa: "minha Vandal está pior que minha Phantom?"
+    """
     kills = [k for k in db.kills_for_puuid(puuid) if k["killer_puuid"] == puuid]
     by = defaultdict(int)
     for k in kills:
         by[k["weapon"] or "?"] += 1
     total = sum(by.values()) or 1
-    out = [{"weapon": w, "kills": c, "share": _rate(c, total)} for w, c in by.items()]
+
+    aim = defaultdict(lambda: {"hs": 0, "bs": 0, "ls": 0, "rounds": 0})
+    for r in db.round_rows_for_puuid(puuid):
+        w = r.get("weapon")
+        if not w:
+            continue
+        a = aim[w]
+        a["hs"] += r.get("headshots") or 0
+        a["bs"] += r.get("bodyshots") or 0
+        a["ls"] += r.get("legshots") or 0
+        a["rounds"] += 1
+
+    out = []
+    for w, c in by.items():
+        a = aim.get(w)
+        hits = (a["hs"] + a["bs"] + a["ls"]) if a else 0
+        out.append({
+            "weapon": w, "kills": c, "share": _rate(c, total),
+            "hs_pct": _rate_or_none(a["hs"], hits) if a else None,
+            "aim_rounds": a["rounds"] if a else 0,
+            "aim_confidence": _conf(a["rounds"] if a else 0, MIN_WEAPON_ROUNDS),
+        })
     out.sort(key=lambda x: x["kills"], reverse=True)
     return {"total_kills": total, "weapons": out[:12]}
+
+
+# ---------------------------------------------------------------------------
+# Pós-plant, retake e sites
+# ---------------------------------------------------------------------------
+def player_postplant(puuid, map_name=None):
+    """Aproveitamento depois da spike plantada, dos dois lados."""
+    rows = [r for r in db.derived_for_puuid(puuid) if r.get("full_data")]
+    if map_name:
+        rows = [r for r in rows if r["map"] == map_name]
+    if not rows:
+        return {"matches": 0, "confidence": "low"}
+
+    def s(k):
+        return sum(r.get(k) or 0 for r in rows)
+
+    sites = defaultdict(lambda: {"n": 0, "wins": 0})
+    for r in rows:
+        try:
+            for site, v in json.loads(r.get("sites_json") or "{}").items():
+                sites[site]["n"] += v.get("n", 0)
+                sites[site]["wins"] += v.get("wins", 0)
+        except (ValueError, AttributeError):
+            continue
+
+    site_list = [{"site": k, "plants": v["n"], "wins": v["wins"],
+                  "win_rate": _rate(v["wins"], v["n"]),
+                  "confidence": _conf(v["n"], MIN_SITE)}
+                 for k, v in sites.items()]
+    site_list.sort(key=lambda x: x["plants"], reverse=True)
+
+    pp_r, rt_r = s("postplant_rounds"), s("retake_rounds")
+    return {
+        "matches": len(rows),
+        "confidence": _conf(len(rows), MIN_MATCHES),
+        "plants": s("plants"), "defuses": s("defuses"),
+        "postplant": {"rounds": pp_r, "wins": s("postplant_wins"),
+                      "win_rate": _rate_or_none(s("postplant_wins"), pp_r)},
+        "retake": {"rounds": rt_r, "wins": s("retake_wins"),
+                   "win_rate": _rate_or_none(s("retake_wins"), rt_r)},
+        "sites": site_list,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Uso de utilidade
+# ---------------------------------------------------------------------------
+def player_utility(puuid):
+    """Casts por round. Para iniciador/controlador, ACS mente — utilidade é o
+    trabalho real. Fatiado por agente, que é onde a comparação faz sentido."""
+    rows = [r for r in db.derived_for_puuid(puuid) if r.get("full_data")]
+    if not rows:
+        return {"matches": 0, "confidence": "low", "by_agent": []}
+
+    def per_round(rs):
+        rounds = sum(r.get("rounds") or 0 for r in rs) or 1
+        c = {k: sum(r.get(f"cast_{k}") or 0 for r in rs)
+             for k in ("grenade", "ability1", "ability2", "ultimate")}
+        return {
+            "rounds": rounds,
+            "total_per_round": round(sum(c.values()) / rounds, 2),
+            "grenade": round(c["grenade"] / rounds, 2),
+            "ability1": round(c["ability1"] / rounds, 2),
+            "ability2": round(c["ability2"] / rounds, 2),
+            "ultimate": round(c["ultimate"] / rounds, 2),
+        }
+
+    by_agent = defaultdict(list)
+    for r in rows:
+        by_agent[r["agent"] or "?"].append(r)
+    agents = [{"agent": ag, "matches": len(rs), "confidence": _conf(len(rs), MIN_AGENT),
+               **per_round(rs)}
+              for ag, rs in by_agent.items()]
+    agents.sort(key=lambda x: (x["matches"] >= MIN_AGENT, x["total_per_round"]), reverse=True)
+    return {"matches": len(rows), "confidence": _conf(len(rows), MIN_MATCHES),
+            "overall": per_round(rows), "by_agent": agents}
 
 
 # ---------------------------------------------------------------------------

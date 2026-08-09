@@ -70,4 +70,26 @@ export const api = {
   groupCorrelation: () => request("/group/correlation"),
   roundAnalysis: () => request("/group/round-analysis"),
   validateMetrics: (limit = 5) => request(`/validate/metrics?limit=${limit}`),
+
+  // Progresso no tempo
+  trend: (r, t, w = 20) => request(p(r, t, `/trend?window=${w}`)),
+  sessions: (r, t) => request(p(r, t, "/sessions")),
+  rank: (r, t) => request(p(r, t, "/rank")),
+  postplant: (r, t, map) => request(p(r, t, `/postplant${map ? `?map=${encodeURIComponent(map)}` : ""}`)),
+  utility: (r, t) => request(p(r, t, "/utility")),
+  coverage: (r, t) => request(p(r, t, "/coverage")),
+
+  // Metas de treino
+  goals: () => request("/me/goals"),
+  addGoal: (payload) => request("/me/goals", { method: "POST", body: payload }),
+  deleteGoal: (id) => request(`/me/goals/${id}`, { method: "DELETE" }),
+
+  // Relatório semanal do grupo
+  weekly: () => request("/group/weekly"),
+
+  // Opt-out
+  deleteMe: (password) =>
+    request("/me", { method: "DELETE", body: { password, confirm: "APAGAR" } }),
+  removeTracked: (r, t) =>
+    request(`/roster/${encodeURIComponent(r)}/${encodeURIComponent(t)}`, { method: "DELETE" }),
 };

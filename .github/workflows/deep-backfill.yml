@@ -1,0 +1,40 @@
+name: Backfill profundo (manual)
+
+# Re-hidrata partidas de RESUMO em partidas COMPLETAS via /v4/match/{region}/{id}.
+# É o que dá lastro real a clutch/KAST/trade/economia/pós-plant/heatmap: sem ele
+# as métricas profundas saem só das ~5 partidas que o /v4/matches devolve.
+#
+# Caro por design: 1 chamada por partida a 30 req/min. Roda SOB DEMANDA.
+# Ao bater o rate limit o script para sozinho — é só rodar de novo depois.
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Máximo de partidas por jogador nesta execução"
+        required: false
+        default: "50"
+
+concurrency:
+  group: deep-backfill
+  cancel-in-progress: false
+
+jobs:
+  deep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Instalar dependências
+        working-directory: backend
+        run: pip install -r requirements.txt
+      - name: Rodar backfill profundo
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          HENRIKDEV_API_KEY: ${{ secrets.HENRIKDEV_API_KEY }}
+          DEFAULT_REGION: ${{ vars.DEFAULT_REGION || 'latam' }}
+        run: python -m app.poll deep ${{ github.event.inputs.limit }}

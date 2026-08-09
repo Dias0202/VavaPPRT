@@ -34,10 +34,53 @@ All routes except `/`, `/health`, `/auth/*` require `Authorization: Bearer <toke
 | GET | `/players/{riot_id}/{tagline}/recent` | Last 20 matches |
 | GET | `/players/{riot_id}/{tagline}/maps` | Win rate and KD per map |
 | GET | `/players/{riot_id}/{tagline}/agents` | Win rate and ACS per agent |
-| GET | `/players/{riot_id}/{tagline}/weapons` | Kill distribution by weapon |
+| GET | `/players/{riot_id}/{tagline}/weapons` | Kills and HS% by weapon |
 | GET | `/players/{riot_id}/{tagline}/heatmap?map=X` | Kill/death coordinates |
 | GET | `/players/{riot_id}/{tagline}/spatial?map=X` | Kill-frame position snapshots |
 | GET | `/players/{riot_id}/{tagline}/insights` | Natural-language strengths/gaps |
+| GET | `/players/{riot_id}/{tagline}/postplant?map=X` | Post-plant, retake and site win rates |
+| GET | `/players/{riot_id}/{tagline}/utility` | Ability casts per round, by agent |
+| GET | `/players/{riot_id}/{tagline}/coverage` | How many matches have deep data |
+
+---
+
+## Progress over time
+
+The rest of the API aggregates a player's whole history — good for a portrait,
+useless for "am I improving?". These answer the time dimension.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/players/{riot_id}/{tagline}/trend?window=20` | Last N matches vs the N before |
+| GET | `/players/{riot_id}/{tagline}/sessions` | Play sessions + tilt curve |
+| GET | `/players/{riot_id}/{tagline}/rank` | RR/elo trajectory |
+| GET | `/group/weekly` | Group digest: what changed in the last 7 days |
+
+---
+
+## Training goals
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| GET | `/me/goals` | — | Active goals with progress + suggestions |
+| POST | `/me/goals` | `{metric, target, baseline?, label?, direction?}` | Adopt a goal |
+| DELETE | `/me/goals/{id}` | — | Drop a goal |
+
+`metric` must be one of: `kast`, `trade_pct`, `hs_pct`, `kd`, `acs`, `adr`,
+`fd_per_match`, `win_rate`.
+
+---
+
+## Privacy / opt-out
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| DELETE | `/me` | `{password, confirm: "APAGAR"}` | Delete account and all personal data |
+| DELETE | `/roster/{riot_id}/{tagline}` | — | Remove a tracked player and purge their data |
+
+Matches themselves are kept (they are shared with the other friends who played
+them); only the rows identifying that person are removed, and `kills` rows have
+their puuid nulled.
 
 ---
 

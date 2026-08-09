@@ -8,6 +8,7 @@ Para cada partida nova:
 Idempotente por match_id. Respeita o rate limit (cliente serializa).
 """
 import logging
+from datetime import datetime
 
 from . import db
 from . import valorant_api as api
@@ -82,6 +83,7 @@ def process_match(match, friend_puuids):
                 round_rows.append({
                     "match_id": meta["match_id"], "round_id": r["round_id"], "puuid": puuid,
                     "kills": r["kills"], "damage": r["damage"], "headshots": r["headshots"],
+                    "bodyshots": r.get("bodyshots", 0), "legshots": r.get("legshots", 0),
                     "loadout_value": r["loadout_value"], "buy_type": r["buy_type"], "weapon": r["weapon"],
                     "alive_end": 1 if r["alive_end"] else 0, "was_traded": 1 if r["was_traded"] else 0,
                     "attacker_side": 1 if attacker_map.get(r["round_id"]) == ps["team"] else 0,
@@ -190,6 +192,131 @@ def backfill_all(pages=3):
     return {"players": len(roster), "backfilled": total}
 
 
+def recompute_all():
+    """Recalcula as métricas derivadas a partir do `raw_gz` guardado.
+
+    Zero chamadas à API: é o caminho para publicar uma métrica nova sobre o
+    histórico que já está no banco (PLANO_ANALYTICS §10, "custo de recompute").
+    """
+    roster = db.get_roster()
+    friend_puuids = {u["puuid"] for u in roster if u.get("puuid")}
+    ids = db.match_ids_with_raw()
+    done = skipped = 0
+    for mid in ids:
+        raw = db.get_raw_match(mid)
+        if not raw:
+            skipped += 1
+            continue
+        try:
+            bundle = process_match(raw, friend_puuids)
+            db.save_match_bundle(bundle["meta"], bundle["raw_gz"], bundle["match_players"],
+                                 bundle["derived"], bundle["round_rows"], bundle["kill_rows"],
+                                 bundle.get("spatial_rows", []), upgrade=True)
+            done += 1
+        except Exception as e:
+            logger.warning("Recompute %s falhou: %s", mid[:8], e)
+            skipped += 1
+    logger.info("Recompute: %d partidas, %d ignoradas.", done, skipped)
+    return {"recomputed": done, "skipped": skipped}
+
+
+def ingest_rank_history(user):
+    """Baixa a curva de RR do jogador (/v1/mmr-history) e grava."""
+    puuid = user.get("puuid")
+    if not puuid:
+        return 0
+    data = api.fetch_mmr_history(user["riot_id"], user["tagline"], region=user.get("region"))
+    if isinstance(data, dict) and data.get("error"):
+        logger.warning("mmr-history %s#%s: %s", user["riot_id"], user["tagline"], data.get("error"))
+        return 0
+    items = data.get("data") or []
+    rows = []
+    for it in items:
+        mid = it.get("match_id") or (it.get("meta") or {}).get("id")
+        if not mid:
+            continue
+        # v1 e v2 do endpoint nomeiam os campos de forma diferente.
+        tier = it.get("currenttier")
+        tier_name = it.get("currenttierpatched")
+        if tier is None and isinstance(it.get("tier"), dict):
+            tier = it["tier"].get("id")
+            tier_name = it["tier"].get("name")
+        date_raw = it.get("date_raw")
+        if date_raw is None and isinstance(it.get("date"), str):
+            try:
+                date_raw = int(datetime.fromisoformat(
+                    it["date"].replace("Z", "+00:00")).timestamp())
+            except ValueError:
+                date_raw = None
+        rows.append({
+            "puuid": puuid, "match_id": mid, "date_raw": date_raw,
+            "tier": tier, "tier_name": tier_name,
+            "rr": it.get("ranking_in_tier") if it.get("ranking_in_tier") is not None
+                 else it.get("rr"),
+            "rr_change": it.get("mmr_change_to_last_game")
+                 if it.get("mmr_change_to_last_game") is not None
+                 else it.get("last_change"),
+            "elo": it.get("elo"),
+            "map": (it.get("map") or {}).get("name") if isinstance(it.get("map"), dict)
+                 else it.get("map"),
+        })
+    n = db.save_rank_history(rows)
+    logger.info("Rank history %s#%s: %d pontos.", user["riot_id"], user["tagline"], n)
+    return n
+
+
+def deep_backfill_user(user, limit=50, friend_puuids=None):
+    """Re-hidrata partidas de RESUMO em partidas COMPLETAS (1 chamada por
+    partida, via /v4/match/{id}).
+
+    É o que dá lastro real às métricas profundas: sem isto, clutch/KAST/trade/
+    economia/heatmap saem só das ~5 partidas que o /v4/matches devolve.
+    Caro por design (30 req/min) — rodar sob demanda, nunca no caminho crítico.
+    """
+    puuid = user.get("puuid")
+    if not puuid:
+        return {"upgraded": 0, "failed": 0}
+    if friend_puuids is None:
+        friend_puuids = {u["puuid"] for u in db.get_roster() if u.get("puuid")}
+    ids = db.summary_match_ids_for_puuid(puuid, limit=limit)
+    up = fail = 0
+    for mid in ids:
+        data = api.fetch_match_v4(mid, region=user.get("region"))
+        if isinstance(data, dict) and data.get("error"):
+            logger.warning("Backfill profundo %s: %s", mid[:8], data.get("error"))
+            fail += 1
+            if data.get("status") == 429:
+                break  # rate limit: para e continua na próxima execução
+            continue
+        match = data.get("data") or data
+        if not match.get("rounds"):
+            fail += 1
+            continue
+        if not M.is_standard(match):
+            continue
+        bundle = process_match(match, friend_puuids)
+        db.save_match_bundle(bundle["meta"], bundle["raw_gz"], bundle["match_players"],
+                             bundle["derived"], bundle["round_rows"], bundle["kill_rows"],
+                             bundle.get("spatial_rows", []), upgrade=True)
+        up += 1
+        logger.info("Partida %s re-hidratada (completa).", mid[:8])
+    return {"upgraded": up, "failed": fail}
+
+
+def deep_backfill_all(limit=50):
+    roster = db.get_roster()
+    friend_puuids = {u["puuid"] for u in roster if u.get("puuid")}
+    total = {"upgraded": 0, "failed": 0}
+    for u in roster:
+        try:
+            r = deep_backfill_user(u, limit=limit, friend_puuids=friend_puuids)
+            total["upgraded"] += r["upgraded"]
+            total["failed"] += r["failed"]
+        except Exception as e:
+            logger.warning("Erro backfill profundo %s#%s: %s", u["riot_id"], u["tagline"], e)
+    return {"players": len(roster), **total}
+
+
 def ingest_all():
     roster = db.get_roster()
     if not roster:
@@ -203,6 +330,10 @@ def ingest_all():
             total_new += ingest_user(u, friend_puuids)
         except Exception as e:
             logger.warning("Erro ao ingerir %s#%s: %s", u["riot_id"], u["tagline"], e, exc_info=True)
+        try:
+            ingest_rank_history(u)
+        except Exception as e:
+            logger.warning("Erro rank history %s#%s: %s", u["riot_id"], u["tagline"], e)
 
     logger.info("Ingestão: %d jogadores, %d partidas novas.", len(roster), total_new)
     return {"players": len(roster), "new_matches": total_new}
@@ -216,6 +347,7 @@ def ingest_player_now(member, pages=5):
     try:
         new = ingest_user(member, roster_puuids)
         back = backfill_user(member, pages=pages)
+        ingest_rank_history(member)
         logger.info("Jogador %s#%s: %d completas, %d resumo.",
                     member["riot_id"], member["tagline"], new, back)
         return {"full": new, "summary": back}

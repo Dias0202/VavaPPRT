@@ -176,9 +176,32 @@ def init_db():
         cur.execute("""CREATE TABLE IF NOT EXISTS player_round_stats (
             match_id TEXT, round_id INTEGER, puuid TEXT,
             kills INTEGER, damage INTEGER, headshots INTEGER,
+            bodyshots INTEGER, legshots INTEGER,
             loadout_value INTEGER, buy_type TEXT, weapon TEXT,
             alive_end INTEGER, was_traded INTEGER, attacker_side INTEGER,
             PRIMARY KEY (match_id, round_id, puuid)
+        )""")
+
+        # Trajetória de rank/RR por partida (fonte: /v1/mmr-history).
+        cur.execute("""CREATE TABLE IF NOT EXISTS rank_history (
+            puuid TEXT, match_id TEXT,
+            date_raw BIGINT, tier INTEGER, tier_name TEXT,
+            rr INTEGER, rr_change INTEGER, elo INTEGER, map TEXT,
+            PRIMARY KEY (puuid, match_id)
+        )""")
+
+        # Metas de treino: fecham o loop do motor de insights.
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS player_goals (
+            id {serial_pk},
+            puuid TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            label TEXT,
+            baseline REAL,
+            target REAL,
+            direction TEXT DEFAULT 'up',
+            status TEXT DEFAULT 'active',
+            created_raw BIGINT,
+            achieved_raw BIGINT
         )""")
 
         # Kills (todos) — heatmap + recompute.
@@ -204,12 +227,49 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_kills_victim ON kills(victim_puuid)",
             "CREATE INDEX IF NOT EXISTS idx_prs_puuid ON player_round_stats(puuid)",
             "CREATE INDEX IF NOT EXISTS idx_se_puuid ON spatial_events(puuid)",
+            "CREATE INDEX IF NOT EXISTS idx_rh_puuid ON rank_history(puuid)",
+            "CREATE INDEX IF NOT EXISTS idx_goals_puuid ON player_goals(puuid)",
         ):
             cur.execute(stmt)
 
+        _ensure_columns(conn, cur)
         conn.commit()
     finally:
         conn.close()
+
+
+# Colunas acrescentadas depois da v1 do schema. Bancos já existentes (o seu
+# Supabase, o SQLite de dev) não são recriados — precisam de ALTER.
+_ADDED_COLUMNS = {
+    "player_match_derived": [
+        ("plants", "INTEGER DEFAULT 0"), ("defuses", "INTEGER DEFAULT 0"),
+        ("postplant_rounds", "INTEGER DEFAULT 0"), ("postplant_wins", "INTEGER DEFAULT 0"),
+        ("retake_rounds", "INTEGER DEFAULT 0"), ("retake_wins", "INTEGER DEFAULT 0"),
+        ("sites_json", "TEXT"),
+        ("cast_grenade", "INTEGER DEFAULT 0"), ("cast_ability1", "INTEGER DEFAULT 0"),
+        ("cast_ability2", "INTEGER DEFAULT 0"), ("cast_ultimate", "INTEGER DEFAULT 0"),
+    ],
+    "player_round_stats": [
+        ("bodyshots", "INTEGER DEFAULT 0"), ("legshots", "INTEGER DEFAULT 0"),
+    ],
+}
+
+
+def _existing_columns(conn, cur, table):
+    if _is_sqlite(conn):
+        cur.execute(f"PRAGMA table_info({table})")
+        return {r[1] for r in cur.fetchall()}
+    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table,))
+    return {r[0] for r in cur.fetchall()}
+
+
+def _ensure_columns(conn, cur):
+    """Acrescenta colunas novas em tabelas que já existem (idempotente)."""
+    for table, cols in _ADDED_COLUMNS.items():
+        have = _existing_columns(conn, cur, table)
+        for name, decl in cols:
+            if name not in have:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +462,21 @@ def delete_user(uid):
 # ---------------------------------------------------------------------------
 # Partidas — escrita
 # ---------------------------------------------------------------------------
+# Colunas de player_match_derived, em uma única definição (escrita completa e
+# de resumo usam a mesma lista; `.get()` cobre o que o resumo não tem).
+DERIVED_COLS = [
+    "match_id", "puuid", "map", "agent", "won", "rounds", "kills", "deaths",
+    "assists", "score", "damage", "headshots", "bodyshots", "legshots", "first_bloods",
+    "first_deaths", "trade_kills", "deaths_traded", "kast_rounds",
+    "mk2", "mk3", "mk4", "mk5", "atk_rounds", "atk_wins", "def_rounds", "def_wins",
+    "eco_rounds", "eco_wins", "force_rounds", "force_wins", "full_rounds", "full_wins",
+    "pistol_rounds", "pistol_wins", "clutches_json", "full_data",
+    "plants", "defuses", "postplant_rounds", "postplant_wins",
+    "retake_rounds", "retake_wins", "sites_json",
+    "cast_grenade", "cast_ability1", "cast_ability2", "cast_ultimate",
+]
+
+
 def match_exists(match_id):
     conn = get_connection()
     try:
@@ -416,8 +491,14 @@ def compress_raw(match_dict_stripped):
     return gzip.compress(json.dumps(match_dict_stripped, ensure_ascii=False).encode("utf-8"))
 
 
-def save_match_bundle(meta, raw_gz, match_players, derived, round_rows, kill_rows, spatial_rows=None):
-    """Grava uma partida inteira de forma idempotente."""
+def save_match_bundle(meta, raw_gz, match_players, derived, round_rows, kill_rows,
+                      spatial_rows=None, upgrade=False):
+    """Grava uma partida inteira de forma idempotente.
+
+    upgrade=True sobrescreve linhas já existentes: é o que o backfill profundo
+    usa para promover uma partida de resumo (full_data=0) a completa. Sem isso o
+    ON CONFLICT DO NOTHING descartaria silenciosamente a re-hidratação.
+    """
     conn = get_connection()
     try:
         _upsert(conn, "matches",
@@ -425,30 +506,25 @@ def save_match_bundle(meta, raw_gz, match_players, derived, round_rows, kill_row
                 ["match_id"],
                 (meta["match_id"], meta["map"], meta["mode"], meta["queue"], meta["season"],
                  meta["started_at"], meta.get("started_raw"), meta["rounds"], meta["region"],
-                 _blob(conn, raw_gz)))
+                 _blob(conn, raw_gz)), update=upgrade)
 
         mp_cols = ["match_id", "puuid", "name", "tag", "team", "agent", "won", "score",
                    "kills", "deaths", "assists", "headshots", "bodyshots", "legshots",
                    "damage_made", "damage_received", "loadout_avg", "party_id", "tier", "tier_name"]
         for r in match_players:
             _upsert(conn, "match_players", mp_cols, ["match_id", "puuid"],
-                    tuple(r[c] for c in mp_cols))
+                    tuple(r[c] for c in mp_cols), update=upgrade)
 
-        d_cols = ["match_id", "puuid", "map", "agent", "won", "rounds", "kills", "deaths",
-                  "assists", "score", "damage", "headshots", "bodyshots", "legshots", "first_bloods",
-                  "first_deaths", "trade_kills", "deaths_traded", "kast_rounds",
-                  "mk2", "mk3", "mk4", "mk5", "atk_rounds", "atk_wins", "def_rounds", "def_wins",
-                  "eco_rounds", "eco_wins", "force_rounds", "force_wins", "full_rounds", "full_wins",
-                  "pistol_rounds", "pistol_wins", "clutches_json", "full_data"]
         for r in derived:
-            _upsert(conn, "player_match_derived", d_cols, ["match_id", "puuid"],
-                    tuple(r[c] for c in d_cols))
+            _upsert(conn, "player_match_derived", DERIVED_COLS, ["match_id", "puuid"],
+                    tuple(r.get(c) for c in DERIVED_COLS), update=upgrade)
 
         rs_cols = ["match_id", "round_id", "puuid", "kills", "damage", "headshots",
+                   "bodyshots", "legshots",
                    "loadout_value", "buy_type", "weapon", "alive_end", "was_traded", "attacker_side"]
         for r in round_rows:
             _upsert(conn, "player_round_stats", rs_cols, ["match_id", "round_id", "puuid"],
-                    tuple(r[c] for c in rs_cols))
+                    tuple(r.get(c) for c in rs_cols), update=upgrade)
 
         k_cols = ["match_id", "round_id", "order_in_round", "time_ms", "killer_puuid",
                   "victim_puuid", "weapon", "is_first", "is_trade", "vx", "vy"]
@@ -482,14 +558,8 @@ def save_summary_match(meta, mp_row, derived_row):
                    "kills", "deaths", "assists", "headshots", "bodyshots", "legshots",
                    "damage_made", "damage_received", "loadout_avg", "party_id", "tier", "tier_name"]
         _upsert(conn, "match_players", mp_cols, ["match_id", "puuid"], tuple(mp_row[c] for c in mp_cols))
-        d_cols = ["match_id", "puuid", "map", "agent", "won", "rounds", "kills", "deaths",
-                  "assists", "score", "damage", "headshots", "bodyshots", "legshots", "first_bloods",
-                  "first_deaths", "trade_kills", "deaths_traded", "kast_rounds",
-                  "mk2", "mk3", "mk4", "mk5", "atk_rounds", "atk_wins", "def_rounds", "def_wins",
-                  "eco_rounds", "eco_wins", "force_rounds", "force_wins", "full_rounds", "full_wins",
-                  "pistol_rounds", "pistol_wins", "clutches_json", "full_data"]
-        _upsert(conn, "player_match_derived", d_cols, ["match_id", "puuid"],
-                tuple(derived_row[c] for c in d_cols))
+        _upsert(conn, "player_match_derived", DERIVED_COLS, ["match_id", "puuid"],
+                tuple(derived_row.get(c) for c in DERIVED_COLS))
         conn.commit()
     finally:
         conn.close()
@@ -604,6 +674,12 @@ def get_raw_match(match_id):
         conn.close()
 
 
+def match_ids_with_raw():
+    """Toda partida que guardou raw — base do recompute offline."""
+    return [r["match_id"] for r in _query(
+        "SELECT match_id FROM matches WHERE raw_gz IS NOT NULL ORDER BY started_raw DESC")]
+
+
 def recent_match_ids(limit=5):
     return [r["match_id"] for r in _query(
         "SELECT match_id FROM matches WHERE raw_gz IS NOT NULL ORDER BY started_raw DESC LIMIT ?",
@@ -613,3 +689,155 @@ def recent_match_ids(limit=5):
 
 def derived_for_puuid_match(match_id):
     return _query("SELECT * FROM player_match_derived WHERE match_id = ?", (match_id,))
+
+
+# ---------------------------------------------------------------------------
+# Backfill profundo — partidas de resumo que dá para re-hidratar
+# ---------------------------------------------------------------------------
+def summary_match_ids_for_puuid(puuid, limit=200):
+    """Partidas do jogador que só têm resumo (sem rounds/kills), mais novas
+    primeiro. São as candidatas a re-hidratação via /v4/match/{id}."""
+    return [r["match_id"] for r in _query(
+        "SELECT d.match_id FROM player_match_derived d "
+        "JOIN matches m ON m.match_id = d.match_id "
+        "WHERE d.puuid = ? AND (d.full_data = 0 OR d.full_data IS NULL) "
+        "ORDER BY m.started_raw DESC LIMIT ?",
+        (puuid, limit),
+    )]
+
+
+def deep_coverage(puuid):
+    """(partidas completas, total) — quanto das métricas profundas tem lastro."""
+    rows = _query(
+        "SELECT full_data, COUNT(*) AS n FROM player_match_derived "
+        "WHERE puuid = ? GROUP BY full_data", (puuid,))
+    full = sum(r["n"] for r in rows if r["full_data"])
+    return full, sum(r["n"] for r in rows)
+
+
+# ---------------------------------------------------------------------------
+# Rank / RR
+# ---------------------------------------------------------------------------
+RANK_COLS = ["puuid", "match_id", "date_raw", "tier", "tier_name", "rr",
+             "rr_change", "elo", "map"]
+
+
+def save_rank_history(rows):
+    if not rows:
+        return 0
+    conn = get_connection()
+    try:
+        for r in rows:
+            _upsert(conn, "rank_history", RANK_COLS, ["puuid", "match_id"],
+                    tuple(r.get(c) for c in RANK_COLS), update=True)
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
+
+
+def rank_history_for_puuid(puuid, limit=200):
+    return _query("SELECT * FROM rank_history WHERE puuid = ? "
+                  "ORDER BY date_raw DESC LIMIT ?", (puuid, limit))
+
+
+# ---------------------------------------------------------------------------
+# Metas de treino
+# ---------------------------------------------------------------------------
+GOAL_COLS = ["puuid", "metric", "label", "baseline", "target", "direction",
+             "status", "created_raw", "achieved_raw"]
+
+
+def create_goal(row):
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        cols = ", ".join(GOAL_COLS)
+        conn.cursor().execute(
+            f"INSERT INTO player_goals ({cols}) VALUES ({', '.join([ph] * len(GOAL_COLS))})",
+            tuple(row.get(c) for c in GOAL_COLS))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def goals_for_puuid(puuid):
+    return _query("SELECT * FROM player_goals WHERE puuid = ? ORDER BY id DESC", (puuid,))
+
+
+def update_goal_status(goal_id, status, achieved_raw=None):
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        conn.cursor().execute(
+            f"UPDATE player_goals SET status={ph}, achieved_raw={ph} WHERE id={ph}",
+            (status, achieved_raw, goal_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_goal(goal_id, puuid):
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        conn.cursor().execute(
+            f"DELETE FROM player_goals WHERE id={ph} AND puuid={ph}", (goal_id, puuid))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Opt-out / direito ao esquecimento
+# ---------------------------------------------------------------------------
+def purge_puuid(puuid):
+    """Apaga TODO dado pessoal derivado de um puuid, em todas as tabelas.
+
+    Cumpre o opt-out prometido no PLANO_ANALYTICS §7. Não apaga as partidas em
+    si (são compartilhadas com os outros amigos que jogaram nelas) — apaga as
+    linhas que identificam esta pessoa."""
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        cur = conn.cursor()
+        counts = {}
+        for table, col in (("player_match_derived", "puuid"),
+                           ("player_round_stats", "puuid"),
+                           ("match_players", "puuid"),
+                           ("spatial_events", "puuid"),
+                           ("rank_history", "puuid"),
+                           ("player_goals", "puuid")):
+            cur.execute(f"DELETE FROM {table} WHERE {col} = {ph}", (puuid,))
+            counts[table] = cur.rowcount
+        for col in ("killer_puuid", "victim_puuid"):
+            cur.execute(f"UPDATE kills SET {col} = NULL WHERE {col} = {ph}", (puuid,))
+        cur.execute(f"DELETE FROM tracked_players WHERE puuid = {ph}", (puuid,))
+        counts["tracked_players"] = cur.rowcount
+        conn.commit()
+        return counts
+    finally:
+        conn.close()
+
+
+def delete_user_by_id(uid):
+    conn = get_connection()
+    try:
+        conn.cursor().execute(f"DELETE FROM users WHERE id = {_ph(conn)}", (uid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def orphan_matches_cleanup():
+    """Remove partidas que não sobraram jogadores rastreados (pós-purge)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM matches WHERE match_id NOT IN "
+                    "(SELECT DISTINCT match_id FROM player_match_derived)")
+        n = cur.rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.close()

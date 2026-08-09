@@ -109,8 +109,11 @@ evitem Bind, fulano rende mais solo").
 | F2 | Entrada, clutch, trade, KAST | ✅ |
 | F3 | Grupos, sinergia, lift, recomendação | ✅ |
 | F4 | Heatmaps + motor de insights | ✅ |
-| F5 | Backfill profundo (clutch/economia retroativos) | ⏳ |
-| — | Tendência de rank/RR no tempo | ⏳ |
+| F5 | Backfill profundo (clutch/economia retroativos) | ✅ |
+| F6 | Tendência no tempo, sessões/tilt, curva de RR | ✅ |
+| F7 | Pós-plant/site, HS% por arma, uso de utilidade | ✅ |
+| F8 | Metas de treino + relatório semanal do grupo | ✅ |
+| F9 | Opt-out (apaga puuid e dados associados) | ✅ |
 
 ## 10. Riscos de produto
 

@@ -4,13 +4,15 @@ Análise exibida só para amigos cadastrados/consentidos; dados de adversário s
 entram de forma agregada (contexto de rank), nunca como perfil navegável.
 """
 import logging
+import time
 
 from fastapi import FastAPI, Depends, HTTPException, Header, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config, db, auth, analytics, ingest
+from . import config, db, auth, analytics, ingest, progress
 from . import valorant_api as vapi
-from .schemas import RegisterIn, LoginIn, TokenOut, MeOut, AddPlayerIn, GroupDetailIn
+from .schemas import (RegisterIn, LoginIn, TokenOut, MeOut, AddPlayerIn,
+                      GroupDetailIn, GoalIn, DeleteMeIn)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("api")
@@ -307,6 +309,133 @@ def group_round_analysis(user=Depends(current_user)):
 def spatial(riot_id: str, tagline: str, map: str = Query(default=None), user=Depends(current_user)):
     """Posições do jogador em snapshots de kills (para análise espacial avançada)."""
     return analytics.player_spatial(_resolve_puuid(riot_id, tagline), map)
+
+
+# ---------------------------------------------------------------------------
+# Progresso no tempo: tendência, sessões/tilt, curva de RR
+# ---------------------------------------------------------------------------
+@app.get("/players/{riot_id}/{tagline}/trend")
+def trend(riot_id: str, tagline: str, window: int = Query(default=20, ge=5, le=100),
+          user=Depends(current_user)):
+    """Últimas N partidas vs as N anteriores."""
+    return progress.trend(_resolve_puuid(riot_id, tagline), window=window)
+
+
+@app.get("/players/{riot_id}/{tagline}/sessions")
+def sessions(riot_id: str, tagline: str, user=Depends(current_user)):
+    """Sessões de jogo e queda de rendimento ao longo da noite."""
+    return progress.sessions(_resolve_puuid(riot_id, tagline))
+
+
+@app.get("/players/{riot_id}/{tagline}/rank")
+def rank(riot_id: str, tagline: str, user=Depends(current_user)):
+    """Trajetória de RR/elo."""
+    return progress.rank_curve(_resolve_puuid(riot_id, tagline))
+
+
+@app.get("/players/{riot_id}/{tagline}/postplant")
+def postplant(riot_id: str, tagline: str, map: str = Query(default=None),
+              user=Depends(current_user)):
+    """Pós-plant, retake e sites."""
+    return analytics.player_postplant(_resolve_puuid(riot_id, tagline), map)
+
+
+@app.get("/players/{riot_id}/{tagline}/utility")
+def utility(riot_id: str, tagline: str, user=Depends(current_user)):
+    """Uso de utilidade por round, fatiado por agente."""
+    return analytics.player_utility(_resolve_puuid(riot_id, tagline))
+
+
+@app.get("/players/{riot_id}/{tagline}/coverage")
+def coverage(riot_id: str, tagline: str, user=Depends(current_user)):
+    """Quantas partidas têm dado profundo — honestidade sobre o lastro."""
+    full, total = db.deep_coverage(_resolve_puuid(riot_id, tagline))
+    return {"full_matches": full, "total_matches": total,
+            "pct": round(100 * full / total, 1) if total else 0.0,
+            "pending_deep_backfill": total - full}
+
+
+# ---------------------------------------------------------------------------
+# Metas de treino
+# ---------------------------------------------------------------------------
+@app.get("/me/goals")
+def list_goals(user=Depends(current_user)):
+    if not user.get("puuid"):
+        return {"goals": [], "suggestions": []}
+    return {"goals": progress.evaluate_goals(user["puuid"]),
+            "suggestions": progress.suggest_goals(user["puuid"])}
+
+
+@app.post("/me/goals")
+def add_goal(body: GoalIn, user=Depends(current_user)):
+    if not user.get("puuid"):
+        raise HTTPException(400, "Sua conta ainda não tem dados vinculados.")
+    if body.metric not in progress.GOAL_SPECS:
+        raise HTTPException(400, f"Métrica '{body.metric}' não é acompanhada. "
+                                 f"Opções: {', '.join(progress.GOAL_SPECS)}.")
+    spec = progress.GOAL_SPECS[body.metric]
+    baseline = body.baseline
+    if baseline is None:
+        baseline = progress._current_metric_values(user["puuid"]).get(body.metric)
+    db.create_goal({
+        "puuid": user["puuid"], "metric": body.metric,
+        "label": body.label or spec["label"],
+        "baseline": baseline, "target": body.target,
+        "direction": body.direction or spec.get("direction", "up"),
+        "status": "active", "created_raw": int(time.time()), "achieved_raw": None,
+    })
+    return {"status": "ok"}
+
+
+@app.delete("/me/goals/{goal_id}")
+def remove_goal(goal_id: int, user=Depends(current_user)):
+    if not user.get("puuid"):
+        raise HTTPException(400, "Sua conta ainda não tem dados vinculados.")
+    db.delete_goal(goal_id, user["puuid"])
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Relatório semanal do grupo
+# ---------------------------------------------------------------------------
+@app.get("/group/weekly")
+def group_weekly(user=Depends(current_user)):
+    return progress.weekly_report(db.get_roster())
+
+
+# ---------------------------------------------------------------------------
+# Opt-out (PLANO_ANALYTICS §7) — direito ao esquecimento
+# ---------------------------------------------------------------------------
+@app.delete("/me")
+def delete_me(body: DeleteMeIn, user=Depends(current_user)):
+    """Apaga a conta e TODO dado pessoal associado. Irreversível.
+
+    Exige senha + confirmação textual: é destrutivo e não tem desfazer."""
+    if body.confirm != "APAGAR":
+        raise HTTPException(400, "Confirmação inválida: envie confirm='APAGAR'.")
+    if not auth.verify_password(body.password, user["password_hash"]):
+        raise HTTPException(401, "Senha incorreta.")
+    purged = {}
+    if user.get("puuid"):
+        purged = db.purge_puuid(user["puuid"])
+    db.delete_user_by_id(user["id"])
+    orphans = db.orphan_matches_cleanup()
+    logger.info("Opt-out do usuário %s concluído.", user["username"])
+    return {"status": "ok", "purged": purged, "orphan_matches_removed": orphans}
+
+
+@app.delete("/roster/{riot_id}/{tagline}")
+def remove_tracked(riot_id: str, tagline: str, user=Depends(current_user)):
+    """Remove uma pessoa rastreada e apaga os dados dela."""
+    m = db.get_roster_member_by_riot(riot_id, tagline.lstrip("#"))
+    if not m:
+        raise HTTPException(404, "Jogador não está no grupo.")
+    if m.get("kind") != "tracked":
+        raise HTTPException(400, "Esse jogador tem login próprio — só ele pode se remover "
+                                 "(DELETE /me).")
+    purged = db.purge_puuid(m["puuid"])
+    orphans = db.orphan_matches_cleanup()
+    return {"status": "ok", "purged": purged, "orphan_matches_removed": orphans}
 
 
 @app.get("/validate/metrics")

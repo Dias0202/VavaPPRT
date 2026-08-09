@@ -306,6 +306,62 @@ def round_winners(match):
 PISTOL_ROUNDS = {0, 12}
 
 
+def player_ability_casts(match, puuid):
+    """Casts de utilidade do jogador na partida.
+
+    Só o nível de JOGADOR traz os números: em `rounds[].stats[].ability_casts`
+    a Henrik devolve tudo `null` (e ainda com outra grafia de chave —
+    `ability_1` vs `ability1`). Somar os rounds daria zero sempre.
+    """
+    p = index_players(match).get(puuid) or {}
+    c = p.get("ability_casts") or {}
+    return {
+        "grenade": c.get("grenade") or c.get("grenade_casts") or 0,
+        "ability1": c.get("ability1") or c.get("ability_1") or 0,
+        "ability2": c.get("ability2") or c.get("ability_2") or 0,
+        "ultimate": c.get("ultimate") or c.get("ultimate_casts") or 0,
+    }
+
+
+def plant_stats(match, team):
+    """Pós-plant, retake e sites, do ponto de vista de um time.
+
+    - pós-plant: rounds em que o SEU time plantou → quantos vocês seguraram.
+    - retake: rounds em que o INIMIGO plantou → quantos vocês reverteram.
+    - sites: onde o seu time planta (A/B/C) e o aproveitamento em cada um.
+    """
+    pp_r = pp_w = rt_r = rt_w = plants = defuses = 0
+    sites = defaultdict(lambda: {"n": 0, "wins": 0})
+    for rd in match.get("rounds", []):
+        plant = rd.get("plant") or {}
+        planter = plant.get("player") or {}
+        planter_team = planter.get("team")
+        if not planter_team:
+            continue
+        won = rd.get("winning_team") == team
+        if planter_team == team:
+            plants += 1
+            pp_r += 1
+            pp_w += 1 if won else 0
+            site = plant.get("site")
+            if site:
+                sites[site]["n"] += 1
+                sites[site]["wins"] += 1 if won else 0
+        else:
+            rt_r += 1
+            rt_w += 1 if won else 0
+        defuse = rd.get("defuse") or {}
+        defuser = defuse.get("player") or {}
+        if defuser.get("team") == team:
+            defuses += 1
+    return {
+        "plants": plants, "defuses": defuses,
+        "postplant_rounds": pp_r, "postplant_wins": pp_w,
+        "retake_rounds": rt_r, "retake_wins": rt_w,
+        "sites": {k: dict(v) for k, v in sites.items()},
+    }
+
+
 def build_player_derived(match, puuid, kills_annotated=None, attacker_map=None):
     """Linha de métricas profundas de um jogador na partida (alimenta o agregado)."""
     summary = player_summary(match, puuid)
@@ -360,6 +416,8 @@ def build_player_derived(match, puuid, kills_annotated=None, attacker_map=None):
             pistol_r += 1; pistol_w += 1 if won_round else 0
 
     clutches = [c for c in compute_clutches(match) if c["puuid"] == puuid]
+    pl = plant_stats(match, team)
+    casts = player_ability_casts(match, puuid)
 
     return {
         "match_id": match_meta(match)["match_id"],
@@ -384,6 +442,12 @@ def build_player_derived(match, puuid, kills_annotated=None, attacker_map=None):
         "clutches_json": json.dumps(
             [{"size": c["size"], "won": c["won"]} for c in clutches]
         ),
+        "plants": pl["plants"], "defuses": pl["defuses"],
+        "postplant_rounds": pl["postplant_rounds"], "postplant_wins": pl["postplant_wins"],
+        "retake_rounds": pl["retake_rounds"], "retake_wins": pl["retake_wins"],
+        "sites_json": json.dumps(pl["sites"]),
+        "cast_grenade": casts["grenade"], "cast_ability1": casts["ability1"],
+        "cast_ability2": casts["ability2"], "cast_ultimate": casts["ultimate"],
         "full_data": 1,
     }
 

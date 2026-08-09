@@ -43,3 +43,18 @@ class MemberRef(BaseModel):
 
 class GroupDetailIn(BaseModel):
     members: list[MemberRef] = Field(min_length=2, max_length=5)
+
+
+class GoalIn(BaseModel):
+    """Meta de treino. `metric` precisa ser uma das que a plataforma mede."""
+    metric: str = Field(min_length=1, max_length=32)
+    target: float
+    baseline: float | None = None
+    label: str | None = Field(default=None, max_length=64)
+    direction: str = "up"
+
+
+class DeleteMeIn(BaseModel):
+    """Opt-out exige confirmação explícita: a ação é irreversível."""
+    password: str
+    confirm: str = Field(description="precisa ser exatamente 'APAGAR'")

@@ -574,3 +574,109 @@ main.page { padding: 32px 0 64px; }
 /* Stat value color transition */
 .stat .v { transition: color var(--dur-norm) ease; }
 .stat .v small { vertical-align: super; font-size: 12px; }
+
+/* ============================================================
+   Dimensão temporal — tendência, sessões/tilt, RR, semana, metas
+   ============================================================ */
+
+/* ---------- Tendência ---------- */
+.trend-row {
+  display: grid;
+  grid-template-columns: 1fr auto 20px auto 72px;
+  align-items: center; gap: 12px;
+  padding: 13px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--muted-2);
+  margin-bottom: 8px;
+}
+.trend-row.melhorou { border-left-color: var(--teal); }
+.trend-row.piorou { border-left-color: var(--red); }
+.trend-label { font-weight: 600; }
+.trend-prev { font-family: var(--mono); color: var(--muted); font-size: 14px; }
+.trend-arrow { color: var(--muted-2); text-align: center; }
+.trend-cur { font-family: var(--mono); font-size: 16px; font-weight: 700; }
+.trend-delta {
+  font-family: var(--mono); font-size: 14px; font-weight: 700; text-align: right;
+}
+.trend-delta.melhorou { color: var(--teal); }
+.trend-delta.piorou { color: var(--red); }
+.trend-delta.estável { color: var(--muted); }
+
+/* ---------- Tilt ---------- */
+.tilt-box {
+  padding: 16px 20px; margin-bottom: 24px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--muted-2);
+  clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, 0 100%);
+}
+.tilt-box.bad { border-left-color: var(--red); }
+.tilt-box.warn { border-left-color: var(--gold); }
+.tilt-box.ok { border-left-color: var(--teal); }
+.tilt-box strong {
+  font-family: var(--display); font-size: 18px; letter-spacing: 0.02em;
+  display: block; margin-bottom: 6px;
+}
+.tilt-box p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.tilt-box b { color: var(--text); }
+
+/* ---------- Sessões ---------- */
+.session-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 11px 16px; margin-bottom: 6px;
+  background: var(--surface); border: 1px solid var(--line);
+}
+.session-dots { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.session-dots i {
+  width: 11px; height: 11px; display: inline-block;
+  border: 1px solid var(--line);
+}
+.session-dots i.w { background: var(--teal-dim); border-color: var(--teal); }
+.session-dots i.l { background: var(--red-dim); border-color: var(--red); }
+
+/* ---------- Curva de elo ---------- */
+.elo-spark {
+  width: 100%; height: auto; display: block;
+  background: var(--surface); border: 1px solid var(--line); padding: 6px;
+}
+
+/* ---------- Cabeçalho de seção e tabela ---------- */
+.section-h {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.2em;
+  text-transform: uppercase; color: var(--muted);
+  margin: 26px 0 12px; font-weight: 500;
+}
+.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+.tbl th {
+  text-align: left; font-family: var(--mono); font-size: 10px;
+  letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted);
+  padding: 8px 10px; border-bottom: 1px solid var(--line); font-weight: 500;
+}
+.tbl td { padding: 10px; border-bottom: 1px solid var(--line); }
+.tbl tr:last-child td { border-bottom: none; }
+
+/* ---------- Chips de variação ---------- */
+.chip {
+  display: inline-block; font-family: var(--mono); font-size: 11px;
+  padding: 4px 9px; border: 1px solid var(--line); color: var(--muted);
+  letter-spacing: 0.04em;
+}
+.chip.melhorou { border-color: var(--teal-dim); color: var(--teal); }
+.chip.piorou { border-color: var(--red-dim); color: var(--red); }
+
+/* ---------- Relatório semanal ---------- */
+.week-row { margin-bottom: 10px; }
+.week-changes { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+
+/* ---------- Metas ---------- */
+.goal-row { margin-bottom: 10px; }
+.goal-row.achieved { border-color: var(--teal-dim); }
+.goal-row .bar { width: 100%; }
+.goal-suggest {
+  display: flex; align-items: center; gap: 14px;
+  margin-bottom: 8px; flex-wrap: wrap;
+}
+
+/* Tabs quebram linha quando são muitas (o perfil tem 13). */
+.tabs { flex-wrap: wrap; }

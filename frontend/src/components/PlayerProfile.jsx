@@ -4,13 +4,16 @@ import { api } from "../lib/api";
 import { StatCard, AgentRow, MatchRow } from "./Stats";
 import { Conf, WrBar, ClutchGrid, InsightCard, Loader, Empty } from "./blocks";
 import Heatmap from "./Heatmap";
+import { Tendencia, Sessoes, Rank, PosPlant, Utilidade } from "./Progress";
 
 // Percentual que distingue "0%" de "sem amostra" (backfill não tem dado de lado).
 const pct = (v) => (v === null || v === undefined ? "—" : `${v}%`);
 
 const TABS = [
-  ["visao", "Visão"], ["combate", "Combate"], ["economia", "Economia"],
-  ["mapas", "Mapas"], ["agentes", "Agentes"], ["armas", "Armas"],
+  ["visao", "Visão"], ["tendencia", "Tendência"], ["rank", "Rank"],
+  ["sessoes", "Sessões"], ["combate", "Combate"], ["economia", "Economia"],
+  ["posplant", "Pós-plant"], ["mapas", "Mapas"], ["agentes", "Agentes"],
+  ["armas", "Armas"], ["utilidade", "Utilidade"],
   ["insights", "Insights"], ["heatmap", "Heatmap"],
 ];
 
@@ -58,6 +61,11 @@ export default function PlayerProfile({ riotId, tagline }) {
       {tab === "mapas" && <Lazy fetcher={() => api.maps(riotId, tagline)} render={(d) => <Mapas rows={d} />} />}
       {tab === "agentes" && <Lazy fetcher={() => api.agents(riotId, tagline)} render={(d) => <Agentes rows={d} />} />}
       {tab === "armas" && <Lazy fetcher={() => api.weapons(riotId, tagline)} render={(d) => <Armas data={d} />} />}
+      {tab === "tendencia" && <Lazy fetcher={() => api.trend(riotId, tagline)} render={(d) => <Tendencia data={d} />} />}
+      {tab === "rank" && <Lazy fetcher={() => api.rank(riotId, tagline)} render={(d) => <Rank data={d} />} />}
+      {tab === "sessoes" && <Lazy fetcher={() => api.sessions(riotId, tagline)} render={(d) => <Sessoes data={d} />} />}
+      {tab === "posplant" && <Lazy fetcher={() => api.postplant(riotId, tagline)} render={(d) => <PosPlant data={d} />} />}
+      {tab === "utilidade" && <Lazy fetcher={() => api.utility(riotId, tagline)} render={(d) => <Utilidade data={d} />} />}
       {tab === "insights" && <Lazy fetcher={() => api.insights(riotId, tagline)} render={(d) => <Insights data={d} />} />}
       {tab === "heatmap" && <Heatmap riotId={riotId} tagline={tagline} />}
     </motion.div>
@@ -301,7 +309,17 @@ function Armas({ data }) {
           key={w.weapon}
           variants={{ hidden: { opacity: 0, x: -8 }, visible: { opacity: 1, x: 0 } }}
         >
-          <div className="agent-name"><strong>{w.weapon}</strong></div>
+          <div className="agent-name">
+            <strong>{w.weapon}</strong>
+            {w.hs_pct !== null && w.hs_pct !== undefined && (
+              <span className="muted" style={{ marginLeft: 10, fontSize: 13 }}>
+                HS {w.hs_pct}%
+                {w.aim_confidence === "low" && (
+                  <span title={`Só ${w.aim_rounds} rounds com esta arma`}> ·&nbsp;dados baixos</span>
+                )}
+              </span>
+            )}
+          </div>
           <div style={{ textAlign: "right", minWidth: 200 }}>
             <span className="mono">{w.kills} <span className="muted">({w.share}%)</span></span>
             <div className="bar" style={{ marginTop: 6, width: 180, marginLeft: "auto" }}>

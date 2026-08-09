@@ -8,6 +8,9 @@ import Dashboard from "./pages/Dashboard";
 import Leaderboard from "./pages/Leaderboard";
 import Profile from "./pages/Profile";
 import Group from "./pages/Group";
+import Weekly from "./pages/Weekly";
+import Goals from "./pages/Goals";
+import Account from "./pages/Account";
 
 const pageVariants = {
   initial: { opacity: 0, y: 12 },
@@ -68,6 +71,9 @@ export default function App() {
           <Route path="/" element={<PageMotion><Dashboard /></PageMotion>} />
           <Route path="/ranking" element={<PageMotion><Leaderboard /></PageMotion>} />
           <Route path="/grupo" element={<PageMotion><Group /></PageMotion>} />
+          <Route path="/semana" element={<PageMotion><Weekly /></PageMotion>} />
+          <Route path="/metas" element={<PageMotion><Goals /></PageMotion>} />
+          <Route path="/conta" element={<PageMotion><Account /></PageMotion>} />
           <Route path="/jogador/:riotId/:tagline" element={<PageMotion><Profile /></PageMotion>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
