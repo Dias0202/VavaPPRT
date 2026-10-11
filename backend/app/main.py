@@ -686,8 +686,8 @@ def ingest_status(user=Depends(current_user)):
             "last_error": st.get("last_error"), "last_error_raw": st.get("last_error_raw"),
             "matches": total, "full_matches": full,
             "coverage_pct": round(100 * full / total, 1) if total else None,
-            # sem nenhuma ingestão ainda = acabou de entrar, histórico baixando
-            "downloading": not st.get("last_ingested_raw"),
+            # sem coleta e sem partida = acabou de entrar, histórico baixando
+            "downloading": not st.get("last_ingested_raw") and not total,
         })
     runs = db.recent_ingest_runs(5)
     last_ok = next((r for r in runs if r.get("ok") and r.get("finished_raw")), None)
