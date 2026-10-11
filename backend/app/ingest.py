@@ -389,8 +389,13 @@ def deep_backfill_user(user, limit=50, friend_puuids=None):
     for mid in db.summary_match_ids_for_puuid(puuid, limit=limit):
         r = _rehydrate(mid, user.get("region"), friend_puuids)
         if r == 429:
-            fail += 1
-            break  # rate limit: para e continua na próxima execução
+            # A cota (30/min) é dividida com o poller e com os cadastros. No
+            # modo manual não há pressa: espera a janela virar e segue.
+            time.sleep(60)
+            r = _rehydrate(mid, user.get("region"), friend_puuids)
+            if r == 429:
+                fail += 1
+                return {"upgraded": up, "failed": fail, "rate_limited": True}
         if r == "ok":
             up += 1
         elif r == "fail":
@@ -426,6 +431,9 @@ def deep_backfill_all(limit=50):
             r = deep_backfill_user(u, limit=limit, friend_puuids=friend_puuids)
             total["upgraded"] += r["upgraded"]
             total["failed"] += r["failed"]
+            if r.get("rate_limited"):
+                logger.warning("Rate limit persistente — parando; rode de novo mais tarde.")
+                break
         except Exception as e:
             logger.warning("Erro backfill profundo %s#%s: %s", u["riot_id"], u["tagline"], e)
     return {"players": len(roster), **total}
