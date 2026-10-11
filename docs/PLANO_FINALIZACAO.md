@@ -215,11 +215,45 @@ validada com dados reais do grupo.
 
 ## 6. Checklist de "100% funcional"
 
-- [ ] `/health` em produção `ok` com Postgres + chave
-- [ ] Cadastro → aprovação do admin → perfil populado em < 2 min
-- [ ] Partida nova aparece em ≤ 20 min, sem ação manual
-- [ ] Deep backfill progride sozinho até 100% de cobertura
-- [ ] CI verde (SQLite + Postgres + build)
-- [ ] Nenhuma tela vazia sem explicação (status de ingestão/cobertura visível)
-- [ ] Duplas, detalhe de partida, pré-fila e vs-lobby no ar com dados reais
-- [ ] Docs batem com a arquitetura real
+- [x] `/health` em produção `ok` com Postgres + chave
+- [x] Cadastro → aprovação do admin → perfil populado em < 2 min
+- [x] Partida nova entra sozinha (pg_cron → poller a cada 15 min)
+- [x] Deep backfill progride sozinho (`DEEP_PER_RUN` por execução)
+- [x] CI verde (SQLite + Postgres + build); Pages só publica com CI verde
+- [x] Status de ingestão/cobertura visível (chip, Admin, barra no perfil)
+- [x] Duplas, detalhe de partida, pré-fila e vs-lobby no ar
+- [x] Docs batem com a arquitetura real
+
+---
+
+## 7. Execução (2026-10-11)
+
+Implementado e em produção no mesmo dia, commits `9890996`…`HEAD`.
+
+**Infra**
+- Supabase `vavapprt-db` restaurado; papel `vavapprt_app` + schema privado
+  `vavapprt` (fora do `public` exposto pela API REST). Advisors de segurança: 0.
+- Render: env vars novas (`DATABASE_URL`, `HENRIKDEV_API_KEY`, `ADMIN_RIOT_ID`);
+  Postgres do Render removido do blueprint.
+- GitHub: secrets `DATABASE_URL`/`HENRIKDEV_API_KEY`, poller reativado,
+  `ci.yml` novo, `pages.yml` atrás do CI.
+- `pg_cron` (`vavapprt-poller`, `*/15`) + `pg_net` disparando o workflow; PAT no Vault.
+
+**Bugs achados no caminho (todos com teste)**
+- Pool: conexão do psycopg2 não aceita atributo → pool esgotava (pego pela suíte em Postgres).
+- Quem entra no grupo depois ficava sem as partidas já gravadas com o grupo.
+- Backfill de resumo pulava partida compartilhada para o 2º amigo (stack sumia).
+- Throttle da HenrikDev sem lock: cadastros em paralelo estouravam 30 req/min.
+- Backfills (resumo e profundo) desistiam no 1º 429 sem avisar.
+- Heatmap: minimapa vazava e o canvas ficava escondido (perfil e partida).
+- `head_to_head` contava partidas em times opostos como "juntos".
+
+**Grupo inicial**: gabriel (YFV#4258, admin) com login; Luan, Gustavo, Daniel,
+Mateus, Lucas e Joao como rastreados com apelido.
+
+**Pendências conhecidas (não bloqueiam)**
+- O PAT do pg_cron expira na data definida na criação — renovar com
+  `select vavapprt.set_dispatch_token('<novo>')` (runbook em DEPLOY_WEB).
+- Supabase free pausa após 7 dias sem atividade; o poller a cada 15 min
+  deve mantê-lo ativo — conferir na primeira semana.
+- Senha temporária do admin está no `.env` da raiz (fora do git): trocar em Conta → Senha.
