@@ -5,19 +5,37 @@ entram de forma agregada (contexto de rank), nunca como perfil navegável.
 """
 import logging
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException, Header, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config, db, auth, analytics, ingest, progress
+from . import config, db, auth, analytics, ingest, progress, squad, matchview
 from . import valorant_api as vapi
 from .schemas import (RegisterIn, LoginIn, TokenOut, MeOut, AddPlayerIn,
-                      GroupDetailIn, GoalIn, DeleteMeIn, MapPoolIn)
+                      GroupDetailIn, GoalIn, DeleteMeIn, MapPoolIn, MembersIn, PasswordIn)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("api")
 
-app = FastAPI(title="VavaPPRT API", version="2.0.0")
+VERSION = "3.0.0"
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    if config.DATABASE_URL and config.JWT_SECRET_IS_DEFAULT:
+        # Em produção um segredo conhecido = qualquer um forja token de admin.
+        raise RuntimeError("JWT_SECRET não definido (ou ainda no valor de exemplo) em produção.")
+    try:
+        db.init_db()
+        logger.info("Banco inicializado.")
+    except Exception as e:
+        logger.error("Falha init_db: %s", e)
+    yield
+    db.close_pool()
+
+
+app = FastAPI(title="VavaPPRT API", version=VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
@@ -27,16 +45,8 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def _startup():
-    try:
-        db.init_db()
-        logger.info("Banco inicializado.")
-    except Exception as e:
-        logger.error("Falha init_db: %s", e)
-
-
-def current_user(authorization: str = Header(default="")):
+def any_user(authorization: str = Header(default="")):
+    """Usuário autenticado, aprovado ou não (só /me usa isto)."""
     if not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Token ausente.")
     payload = auth.decode_token(authorization.split(" ", 1)[1].strip())
@@ -46,6 +56,20 @@ def current_user(authorization: str = Header(default="")):
     if not user:
         raise HTTPException(401, "Usuário não encontrado.")
     return user
+
+
+def current_user(user=Depends(any_user)):
+    """Membro aprovado. Cadastro pendente não vê dado nenhum do grupo."""
+    status = user.get("status") or "approved"
+    if status != "approved":
+        raise HTTPException(403, "Cadastro aguardando aprovação do administrador do grupo."
+                            if status == "pending" else "Cadastro recusado.")
+    return user
+
+
+def _is_admin_riot(riot_id, tagline):
+    adm = config.admin_riot()
+    return bool(adm) and adm == (riot_id.strip().lower(), tagline.strip().lstrip("#").lower())
 
 
 def _account_puuid(riot_id, tagline):
@@ -85,7 +109,7 @@ def _resolve_puuid(riot_id, tagline):
 # ---------------------------------------------------------------------------
 @app.get("/")
 def root():
-    return {"status": "ok", "service": "VavaPPRT API", "version": "2.0.0"}
+    return {"status": "ok", "service": "VavaPPRT API", "version": VERSION}
 
 
 @app.get("/health")
@@ -96,12 +120,24 @@ def health():
         db_ok = True
     except Exception:
         roster, db_ok = 0, False
+    last = None
+    if db_ok:
+        try:
+            runs = db.recent_ingest_runs(1)
+            if runs:
+                last = {k: runs[0].get(k) for k in ("started_raw", "finished_raw", "ok",
+                                                     "new_matches", "deep_upgraded")}
+        except Exception:
+            pass
     return {
         "status": "ok" if (db_ok and config.HENRIKDEV_API_KEY) else "degraded",
+        "version": VERSION,
         "database": "postgres" if config.DATABASE_URL else "sqlite (dev)",
         "database_ok": db_ok,
         "henrikdev_key": bool(config.HENRIKDEV_API_KEY),
+        "admin_configured": bool(config.admin_riot()),
         "roster_size": roster,
+        "last_ingest": last,
     }
 
 
@@ -117,19 +153,22 @@ def register(body: RegisterIn, background: BackgroundTasks):
 
     puuid, acct_region = _account_puuid(riot_id, tagline)
 
-    region = acct_region or body.region.strip() or "latam"
-    # Quem cria o grupo administra o grupo: sem isso ninguém pode definir a
-    # rotação de mapas e a configuração fica travada para sempre.
-    first_user = not db.get_all_users()
+    region = acct_region or body.region.strip() or config.DEFAULT_REGION
+    # Quem administra é decidido pela env ADMIN_RIOT_ID — nunca "o primeiro a
+    # se cadastrar", que vira corrida logo depois de um deploy com banco limpo.
+    admin = _is_admin_riot(riot_id, tagline)
+    status = "approved" if admin else "pending"
     db.create_user(username, auth.hash_password(body.password), riot_id, tagline,
-                   region, puuid=puuid, is_admin=1 if first_user else 0)
+                   region, puuid=puuid, is_admin=1 if admin else 0, status=status)
     user = db.get_user_by_username(username)
-    # Onboarding (PDD §6): registro → backfill → perfil populado. Sem isto o
-    # perfil fica vazio até o cron rodar (e no dev, para sempre).
-    background.add_task(_ingest_new_player,
-                        {"riot_id": riot_id, "tagline": tagline,
-                         "region": region, "puuid": puuid})
-    return TokenOut(access_token=auth.create_token(user["id"], username), username=username)
+    if admin:
+        # Onboarding (PDD §6): registro → backfill → perfil populado.
+        background.add_task(_ingest_new_player,
+                            {"riot_id": riot_id, "tagline": tagline,
+                             "region": region, "puuid": puuid})
+    # Pendente só baixa dados depois de aprovado: não gasta cota com estranho.
+    return TokenOut(access_token=auth.create_token(user["id"], username),
+                    username=username, status=status)
 
 
 @app.post("/auth/login", response_model=TokenOut)
@@ -137,15 +176,26 @@ def login(body: LoginIn):
     user = db.get_user_by_username(body.username.strip())
     if not user or not auth.verify_password(body.password, user["password_hash"]):
         raise HTTPException(401, "Usuário ou senha inválidos.")
+    if (user.get("status") or "approved") == "rejected":
+        raise HTTPException(403, "Cadastro recusado pelo administrador do grupo.")
     return TokenOut(access_token=auth.create_token(user["id"], user["username"]),
-                    username=user["username"])
+                    username=user["username"], status=user.get("status") or "approved")
 
 
 @app.get("/me", response_model=MeOut)
-def me(user=Depends(current_user)):
+def me(user=Depends(any_user)):
     return MeOut(id=user["id"], username=user["username"], riot_id=user["riot_id"],
-                 tagline=user["tagline"], region=user.get("region") or "latam",
-                 is_admin=bool(user.get("is_admin")))
+                 tagline=user["tagline"], region=user.get("region") or config.DEFAULT_REGION,
+                 is_admin=bool(user.get("is_admin")),
+                 status=user.get("status") or "approved")
+
+
+@app.put("/me/password")
+def change_password(body: PasswordIn, user=Depends(any_user)):
+    if not auth.verify_password(body.current, user["password_hash"]):
+        raise HTTPException(401, "Senha atual incorreta.")
+    db.set_user_password(user["id"], auth.hash_password(body.new))
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +230,7 @@ def roster(user=Depends(current_user)):
 def add_player(body: AddPlayerIn, background: BackgroundTasks, user=Depends(current_user)):
     riot_id = body.riot_id.strip()
     tagline = body.tagline.strip().lstrip("#")
-    region = (body.region or "latam").strip() or "latam"
+    region = (body.region or config.DEFAULT_REGION).strip() or config.DEFAULT_REGION
 
     if db.get_roster_member_by_riot(riot_id, tagline):
         raise HTTPException(409, "Esse jogador já está no grupo.")
@@ -191,7 +241,8 @@ def add_player(body: AddPlayerIn, background: BackgroundTasks, user=Depends(curr
     if db.puuid_in_roster(puuid):
         raise HTTPException(409, "Esse jogador já está no grupo.")
 
-    db.add_tracked_player(riot_id, tagline, region, puuid, added_by=user["id"])
+    label = (body.label or "").strip() or None
+    db.add_tracked_player(riot_id, tagline, region, puuid, added_by=user["id"], label=label)
     member = {"riot_id": riot_id, "tagline": tagline, "region": region, "puuid": puuid}
     background.add_task(_ingest_new_player, member)
     return {"riot_id": riot_id, "tagline": tagline, "region": region,
@@ -269,43 +320,90 @@ def group_squads(user=Depends(current_user)):
     return analytics.squads(friend_puuids, info_by)
 
 
-@app.post("/group/detail")
-def group_detail(body: GroupDetailIn, user=Depends(current_user)):
+def _members_to_puuids(members):
+    """MemberRef[] -> puuids do roster (404/403 com o motivo)."""
     puuids = []
-    for m in body.members:
+    for m in members:
         rm = db.get_roster_member_by_riot(m.riot_id, m.tagline.lstrip("#"))
         if not rm or not rm.get("puuid"):
             raise HTTPException(404, f"Jogador {m.riot_id}#{m.tagline} não encontrado.")
         if not rm.get("consent"):
             raise HTTPException(403, "Jogador não autorizou exibir dados.")
         puuids.append(rm["puuid"])
+    return list(dict.fromkeys(puuids))
+
+
+def _pair(ra, ta, rb, tb):
+    ua = db.get_roster_member_by_riot(ra, ta.lstrip("#"))
+    ub = db.get_roster_member_by_riot(rb, tb.lstrip("#"))
+    if not ua or not ub or not ua.get("puuid") or not ub.get("puuid"):
+        raise HTTPException(404, "Jogador não encontrado.")
+    if not ua.get("consent") or not ub.get("consent"):
+        raise HTTPException(403, "Jogador não autorizou exibir dados.")
+    if ua["puuid"] == ub["puuid"]:
+        raise HTTPException(400, "Escolha duas pessoas diferentes.")
+    return ua, ub
+
+
+@app.post("/group/detail")
+def group_detail(body: GroupDetailIn, user=Depends(current_user)):
+    puuids = _members_to_puuids(body.members)
     _, info_by = _roster_info()
     return analytics.group_detail(puuids, info_by)
 
 
 @app.get("/group/duo/{ra}/{ta}/{rb}/{tb}")
 def group_duo(ra: str, ta: str, rb: str, tb: str, user=Depends(current_user)):
-    ua = db.get_roster_member_by_riot(ra, ta.lstrip("#"))
-    ub = db.get_roster_member_by_riot(rb, tb.lstrip("#"))
-    if not ua or not ub or not ua.get("puuid") or not ub.get("puuid"):
-        raise HTTPException(404, "Dupla não encontrada.")
-    if not ua.get("consent") or not ub.get("consent"):
-        raise HTTPException(403, "Jogador não autorizou exibir dados.")
-    return analytics.duo_detail(ua["puuid"], ub["puuid"], ua["username"], ub["username"])
+    """Dupla: juntos vs separados, quem carrega, quem vinga quem, mapas e combos."""
+    ua, ub = _pair(ra, ta, rb, tb)
+    _, info_by = _roster_info()
+    return squad.duo(ua["puuid"], ub["puuid"], info_by)
+
+
+@app.get("/group/synergy-matrix")
+def group_synergy_matrix(user=Depends(current_user)):
+    """Matriz N×N de win rate por dupla no mesmo time."""
+    friend_puuids, info_by = _roster_info()
+    return squad.synergy_matrix(friend_puuids, info_by)
 
 
 @app.get("/group/correlation")
 def group_correlation(user=Depends(current_user)):
-    """Motor de correlação: mapa × composição × first-blood do grupo completo."""
+    """Mapa × composição, duelo de abertura e sobreviventes — todos os stacks."""
     friend_puuids, info_by = _roster_info()
-    return analytics.group_correlation(list(friend_puuids), info_by)
+    return squad.correlation(friend_puuids, info_by)
 
 
-@app.get("/group/round-analysis")
-def group_round_analysis(user=Depends(current_user)):
-    """Correlação de sobrevivência em round: N membros vivos no fim → WR da partida."""
-    friend_puuids, _ = _roster_info()
-    return analytics.round_correlation(list(friend_puuids))
+@app.post("/group/correlation")
+def group_correlation_for(body: MembersIn, user=Depends(current_user)):
+    """O mesmo, só para o stack exato informado."""
+    puuids = _members_to_puuids(body.members)
+    friend_puuids, info_by = _roster_info()
+    return squad.correlation(friend_puuids, info_by, members=puuids)
+
+
+@app.post("/group/pre-queue")
+def group_pre_queue(body: MembersIn, user=Depends(current_user)):
+    """Quem joga hoje -> mapas para aceitar/evitar e escalação de agentes."""
+    puuids = _members_to_puuids(body.members)
+    _, info_by = _roster_info()
+    return squad.pre_queue(puuids, info_by)
+
+
+@app.get("/matches/{match_id}")
+def match_detail(match_id: str, user=Depends(current_user)):
+    """Placar, timeline de rounds, economia e kills de uma partida do grupo."""
+    friend_puuids, info_by = _roster_info()
+    d = matchview.match_detail(match_id, friend_puuids, info_by)
+    if not d:
+        raise HTTPException(404, "Partida não encontrada (ou ninguém do grupo jogou nela).")
+    return d
+
+
+@app.get("/players/{riot_id}/{tagline}/vs-lobby")
+def vs_lobby(riot_id: str, tagline: str, user=Depends(current_user)):
+    """Você vs os outros 9 da partida e vs a média do seu elo."""
+    return matchview.vs_lobby(_resolve_puuid(riot_id, tagline))
 
 
 @app.get("/players/{riot_id}/{tagline}/spatial")
@@ -429,6 +527,9 @@ def delete_me(body: DeleteMeIn, user=Depends(current_user)):
 
 @app.delete("/roster/{riot_id}/{tagline}")
 def remove_tracked(riot_id: str, tagline: str, user=Depends(current_user)):
+    if not user.get("is_admin"):
+        # Remover apaga dados de outra pessoa: decisão do admin, não de qualquer membro.
+        raise HTTPException(403, "Só o administrador do grupo pode remover jogadores.")
     """Remove uma pessoa rastreada e apaga os dados dela."""
     m = db.get_roster_member_by_riot(riot_id, tagline.lstrip("#"))
     if not m:
@@ -506,3 +607,90 @@ def validate_metrics(limit: int = Query(default=5, le=20), user=Depends(current_
             "issues_found": sum(1 for v in validations if not v.get("clean")),
         })
     return results
+
+
+# ---------------------------------------------------------------------------
+# Administração: aprovação de cadastros
+# ---------------------------------------------------------------------------
+@app.get("/admin/users")
+def admin_users(status: str = Query(default=None), user=Depends(require_admin)):
+    return db.list_users(status)
+
+
+def _target_user(uid):
+    u = db.get_user_by_id(uid)
+    if not u:
+        raise HTTPException(404, "Usuário não encontrado.")
+    return u
+
+
+@app.post("/admin/users/{uid}/approve")
+def admin_approve(uid: int, background: BackgroundTasks, user=Depends(require_admin)):
+    u = _target_user(uid)
+    if (u.get("status") or "approved") == "approved":
+        return {"status": "approved", "changed": False}
+    db.set_user_status(uid, "approved")
+    if u.get("puuid"):
+        background.add_task(_ingest_new_player,
+                            {"riot_id": u["riot_id"], "tagline": u["tagline"],
+                             "region": u.get("region") or config.DEFAULT_REGION,
+                             "puuid": u["puuid"]})
+    return {"status": "approved", "changed": True,
+            "message": "Aprovado. Baixando o histórico em segundo plano."}
+
+
+@app.post("/admin/users/{uid}/reject")
+def admin_reject(uid: int, user=Depends(require_admin)):
+    """Recusa = apaga o cadastro (e qualquer dado que ele tenha)."""
+    u = _target_user(uid)
+    if u["id"] == user["id"]:
+        raise HTTPException(400, "Você não pode recusar a si mesmo.")
+    if u.get("is_admin"):
+        raise HTTPException(400, "Não dá para recusar outro administrador.")
+    if u.get("puuid"):
+        db.purge_puuid(u["puuid"])
+    db.delete_user_by_id(uid)
+    db.orphan_matches_cleanup()
+    return {"status": "rejected"}
+
+
+@app.post("/admin/users/{uid}/admin")
+def admin_promote(uid: int, value: bool = Query(default=True), user=Depends(require_admin)):
+    u = _target_user(uid)
+    if u["id"] == user["id"] and not value:
+        raise HTTPException(400, "Você não pode remover o seu próprio admin.")
+    if (u.get("status") or "approved") != "approved":
+        raise HTTPException(400, "Aprove o cadastro antes de torná-lo admin.")
+    db.set_user_admin(uid, value)
+    return {"is_admin": value}
+
+
+# ---------------------------------------------------------------------------
+# Status da ingestão — honestidade sobre o quão fresco é o dado
+# ---------------------------------------------------------------------------
+@app.get("/status/ingest")
+def ingest_status(user=Depends(current_user)):
+    roster = db.get_roster()
+    state = db.all_ingest_state()
+    cov = db.coverage_by_puuid()
+    last_match = db.last_match_raw_by_puuid()
+    players = []
+    for m in roster:
+        st = state.get(m["puuid"], {})
+        full, total = cov.get(m["puuid"], (0, 0))
+        players.append({
+            "label": m["username"], "riot_id": m["riot_id"], "tagline": m["tagline"],
+            "kind": m["kind"],
+            "last_ingested_raw": st.get("last_ingested_raw"),
+            "last_match_raw": last_match.get(m["puuid"]),
+            "last_error": st.get("last_error"), "last_error_raw": st.get("last_error_raw"),
+            "matches": total, "full_matches": full,
+            "coverage_pct": round(100 * full / total, 1) if total else None,
+            # sem nenhuma ingestão ainda = acabou de entrar, histórico baixando
+            "downloading": not st.get("last_ingested_raw"),
+        })
+    runs = db.recent_ingest_runs(5)
+    last_ok = next((r for r in runs if r.get("ok") and r.get("finished_raw")), None)
+    return {"now_raw": int(time.time()), "runs": runs,
+            "last_ok_raw": last_ok["finished_raw"] if last_ok else None,
+            "players": players}

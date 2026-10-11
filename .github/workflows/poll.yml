@@ -1,12 +1,23 @@
 name: Poller de partidas
 
-# "Poller contínuo" via cron: a cada 10 minutos o GitHub Actions roda o script
-# de ingestão, que busca partidas novas na Henrik e grava no Supabase.
-# Respeita o rate limit (o cliente serializa as chamadas com intervalo mínimo).
+# Busca partidas novas na HenrikDev e grava no Supabase. Também promove algumas
+# partidas de resumo a completas por execução (deep backfill em rodízio).
+#
+# Gatilhos:
+#  - schedule: fallback. O GitHub atrasa crons de repo free (na prática rodava a
+#    cada poucas horas) e DESATIVA o cron após 60 dias sem commit.
+#  - workflow_dispatch: o gatilho real, chamado a cada 15 min pelo pg_cron do
+#    Supabase (ver docs/DEPLOY_WEB.md). Não depende do humor do scheduler.
+#  - keepalive: todo run reativa o próprio workflow via API, o que zera o
+#    contador de 60 dias de inatividade.
 on:
   schedule:
-    - cron: "*/10 * * * *"
-  workflow_dispatch: {} # permite rodar manualmente pela aba Actions
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: write # keepalive (gh workflow enable)
 
 concurrency:
   group: poller
@@ -15,7 +26,7 @@ concurrency:
 jobs:
   poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
 
@@ -23,6 +34,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
+          cache-dependency-path: backend/requirements.txt
 
       - name: Instalar dependências
         working-directory: backend
@@ -33,5 +45,12 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           HENRIKDEV_API_KEY: ${{ secrets.HENRIKDEV_API_KEY }}
-          DEFAULT_REGION: ${{ vars.DEFAULT_REGION || 'latam' }}
+          DEFAULT_REGION: ${{ vars.DEFAULT_REGION || 'na' }}
+          DEEP_PER_RUN: ${{ vars.DEEP_PER_RUN || '10' }}
         run: python -m app.poll
+
+      - name: Keepalive do cron
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow enable poll.yml --repo "${{ github.repository }}" || true

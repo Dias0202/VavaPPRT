@@ -24,3 +24,4 @@ _api_dump/
 # Editores / SO
 .DS_Store
 .vscode/
+.pytest_cache/

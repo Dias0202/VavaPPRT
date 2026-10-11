@@ -611,74 +611,6 @@ def _group_reco(wr, games, lifts, best, worst):
 
 
 # ---------------------------------------------------------------------------
-# Detalhe da dupla (juntos vs separados, mapas, combos de agente)
-# ---------------------------------------------------------------------------
-def duo_detail(pa, pb, name_a, name_b):
-    rows = db.all_match_players_for_puuids([pa, pb])
-    by_match = defaultdict(dict)
-    for r in rows:
-        if r["puuid"] in (pa, pb):
-            by_match[r["match_id"]][r["puuid"]] = r
-
-    together = []  # (match_id, row_a, row_b) mesmo time
-    together_ids = set()
-    for mid, d in by_match.items():
-        if pa in d and pb in d and d[pa]["team"] == d[pb]["team"]:
-            together.append((mid, d[pa], d[pb]))
-            together_ids.add(mid)
-
-    tg = len(together)
-    tw = sum(1 for _, a, _ in together if a["won"])
-
-    # Separados: cada um nas suas partidas SEM o outro no mesmo time.
-    def apart(puuid):
-        rs = db.derived_for_puuid(puuid)
-        ap = [r for r in rs if r["match_id"] not in together_ids]
-        w = sum(r["won"] for r in ap)
-        return len(ap), w
-
-    a_n, a_w = apart(pa)
-    b_n, b_w = apart(pb)
-    together_wr = _rate(tw, tg)
-
-    # Melhores mapas juntos
-    by_map = defaultdict(lambda: {"g": 0, "w": 0})
-    combos = defaultdict(lambda: {"g": 0, "w": 0})
-    a_k = a_d = b_k = b_d = 0
-    for _, a, b in together:
-        mp = a.get("map") or "?"
-        by_map[mp]["g"] += 1
-        by_map[mp]["w"] += 1 if a["won"] else 0
-        combo = f"{a['agent']} + {b['agent']}"
-        combos[combo]["g"] += 1
-        combos[combo]["w"] += 1 if a["won"] else 0
-        a_k += a["kills"] or 0; a_d += a["deaths"] or 0
-        b_k += b["kills"] or 0; b_d += b["deaths"] or 0
-
-    maps = [{"map": m, "games": v["g"], "win_rate": _rate(v["w"], v["g"])}
-            for m, v in by_map.items()]
-    maps.sort(key=lambda x: (x["games"], x["win_rate"]), reverse=True)
-    combo_list = [{"combo": c, "games": v["g"], "win_rate": _rate(v["w"], v["g"])}
-                  for c, v in combos.items()]
-    combo_list.sort(key=lambda x: (x["games"], x["win_rate"]), reverse=True)
-
-    return {
-        "a": name_a, "b": name_b,
-        "together": {"games": tg, "wins": tw, "win_rate": together_wr,
-                     "confidence": _conf(tg, MIN_DUO)},
-        "lift": {
-            "a": {"name": name_a, "apart_wr": _rate(a_w, a_n), "apart_games": a_n,
-                  "lift": round(together_wr - _rate(a_w, a_n), 1)},
-            "b": {"name": name_b, "apart_wr": _rate(b_w, b_n), "apart_games": b_n,
-                  "lift": round(together_wr - _rate(b_w, b_n), 1)},
-        },
-        "combined_kd": {"a": _kd(a_k, a_d), "b": _kd(b_k, b_d)},
-        "maps": maps,
-        "agent_combos": combo_list[:8],
-    }
-
-
-# ---------------------------------------------------------------------------
 # Leaderboard
 # ---------------------------------------------------------------------------
 def leaderboard(users):
@@ -714,100 +646,6 @@ def player_spatial(puuid, map_name=None):
     positions = [{"x": r["x"], "y": r["y"], "event_type": r["event_type"]}
                  for r in rows if r["x"] is not None]
     return {"map": map_name, "positions": positions, "count": len(positions)}
-
-
-# ---------------------------------------------------------------------------
-# Group correlation engine
-# ---------------------------------------------------------------------------
-def group_correlation(puuids, info_by_puuid):
-    """For each map+agent_combo played by the EXACT group, computes win rate.
-    Also surfaces first-blood impact on match outcome."""
-    pset = set(puuids)
-    roster_set = set(info_by_puuid.keys()) | pset
-    by_match = _match_index(roster_set)
-
-    together = []
-    for mid, teams in by_match.items():
-        for team, members in teams.items():
-            mp = {m["puuid"]: m for m in members}
-            if set(mp.keys()) == pset:
-                together.append({
-                    "match_id": mid,
-                    "won": bool(members[0]["won"]),
-                    "map": members[0].get("map") or "?",
-                    "agents": {p: mp[p].get("agent") or "?" for p in pset},
-                })
-                break
-
-    combo_map = defaultdict(lambda: {"g": 0, "w": 0})
-    fb_impact = defaultdict(lambda: {"g": 0, "w": 0})
-
-    member_derived = {p: {r["match_id"]: r for r in db.derived_for_puuid(p)} for p in pset}
-
-    for t in together:
-        mid = t["match_id"]
-        agents_sorted = " + ".join(sorted(t["agents"].values()))
-        key = (t["map"], agents_sorted)
-        combo_map[key]["g"] += 1
-        combo_map[key]["w"] += 1 if t["won"] else 0
-
-        had_fb = any(
-            (member_derived[p].get(mid) or {}).get("first_bloods", 0) > 0
-            for p in pset
-        )
-        fb_key = "fb_secured" if had_fb else "fb_lost"
-        fb_impact[fb_key]["g"] += 1
-        fb_impact[fb_key]["w"] += 1 if t["won"] else 0
-
-    return {
-        "total_together": len(together),
-        "map_agent_combos": [
-            {
-                "map": k[0], "agent_combo": k[1],
-                "games": v["g"], "wins": v["w"],
-                "win_rate": _rate(v["w"], v["g"]),
-                "confidence": _conf(v["g"], MIN_AGENT),
-            }
-            for k, v in sorted(combo_map.items(), key=lambda x: x[1]["g"], reverse=True)
-        ][:12],
-        "first_blood_impact": {
-            k: {"games": v["g"], "win_rate": _rate(v["w"], v["g"])}
-            for k, v in fb_impact.items()
-        },
-    }
-
-
-def round_correlation(puuids):
-    """Round-level analysis: correlates number of group members alive at round end
-    with match win rate. More survivors alive together = stronger closing."""
-    pset = set(puuids)
-    all_rounds = {}
-    for p in pset:
-        for r in db.round_rows_for_puuid(p):
-            key = (r["match_id"], r["round_id"])
-            if key not in all_rounds:
-                all_rounds[key] = {"alive": set(), "match_id": r["match_id"]}
-            if r["alive_end"]:
-                all_rounds[key]["alive"].add(p)
-
-    match_won = {}
-    for p in pset:
-        for r in db.derived_for_puuid(p):
-            match_won[r["match_id"]] = r.get("won", 0)
-
-    by_survivors = defaultdict(lambda: {"rounds": 0, "total": 0})
-    for (mid, _rid), data in all_rounds.items():
-        n_alive = len(data["alive"] & pset)
-        if n_alive == 0:
-            continue
-        by_survivors[n_alive]["rounds"] += 1
-        if match_won.get(mid):
-            by_survivors[n_alive]["total"] += 1
-
-    return {
-        str(n): {"rounds": v["rounds"], "match_wins_when": v["total"]}
-        for n, v in sorted(by_survivors.items())
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -937,9 +775,14 @@ def head_to_head(pa, pb, name_a, name_b):
         wins_b += leader == "b"
         rows.append({"metric": key, "label": label, "a": va, "b": vb, "leader": leader})
 
-    # Partidas em que os dois jogaram juntos.
-    ids_a = {r["match_id"] for r in db.derived_for_puuid(pa)}
-    together = [r for r in db.derived_for_puuid(pb) if r["match_id"] in ids_a]
+    # Partidas em que os dois jogaram juntos — no MESMO time. Partida em times
+    # opostos não é "juntos", e o WR dela é por construção de um dos dois.
+    team_by = {}
+    for r in db.all_match_players_for_puuids([pa, pb]):
+        if r["puuid"] in (pa, pb):
+            team_by.setdefault(r["match_id"], {})[r["puuid"]] = r
+    together = [d[pa] for d in team_by.values()
+                if pa in d and pb in d and d[pa]["team"] == d[pb]["team"]]
     tog_wins = sum(r.get("won") or 0 for r in together)
 
     return {

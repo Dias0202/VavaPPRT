@@ -19,6 +19,14 @@ ASSETS_BASE = "https://valorant-api.com/v1"
 _MIN_INTERVAL = 2.1
 _last_call = [0.0]
 
+# Contadores da execução corrente (o poller grava no ingest_runs).
+stats = {"calls": 0, "rate_limited": 0}
+
+
+def reset_stats():
+    stats["calls"] = 0
+    stats["rate_limited"] = 0
+
 
 def _throttle():
     elapsed = time.monotonic() - _last_call[0]
@@ -33,13 +41,18 @@ def _get(url, throttle=True):
     headers = {}
     if config.HENRIKDEV_API_KEY:
         headers["Authorization"] = config.HENRIKDEV_API_KEY
+    stats["calls"] += 1
     try:
         resp = requests.get(url, headers=headers, timeout=30)
     except requests.RequestException as e:
         return {"error": f"Falha de rede: {e}"}
     if resp.status_code == 200:
-        return resp.json()
+        try:
+            return resp.json()
+        except ValueError:
+            return {"error": "json_invalido", "status": 502}
     if resp.status_code == 429:
+        stats["rate_limited"] += 1
         return {"error": "rate_limit", "status": 429}
     if resp.status_code == 404:
         return {"error": "not_found", "status": 404}

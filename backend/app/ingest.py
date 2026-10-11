@@ -8,9 +8,10 @@ Para cada partida nova:
 Idempotente por match_id. Respeita o rate limit (cliente serializa).
 """
 import logging
+import time
 from datetime import datetime
 
-from . import db
+from . import config, db
 from . import valorant_api as api
 from . import metrics as M
 
@@ -72,6 +73,7 @@ def process_match(match, friend_puuids):
 
     derived, round_rows = [], []
     player_summary_cache = {}
+    winners = M.round_winners(match)
     for puuid in friends_here:
         d = M.build_player_derived(match, puuid, kills_ann, attacker_map)
         if d:
@@ -87,6 +89,7 @@ def process_match(match, friend_puuids):
                     "loadout_value": r["loadout_value"], "buy_type": r["buy_type"], "weapon": r["weapon"],
                     "alive_end": 1 if r["alive_end"] else 0, "was_traded": 1 if r["was_traded"] else 0,
                     "attacker_side": 1 if attacker_map.get(r["round_id"]) == ps["team"] else 0,
+                    "round_won": 1 if winners.get(r["round_id"]) == ps["team"] else 0,
                 })
 
         # Validation logging per friend
@@ -119,9 +122,17 @@ def ingest_user(user, friend_puuids):
     name, tag = user["riot_id"], user["tagline"]
     region = user.get("region") or None
     data = api.fetch_matches_v4(name, tag, region=region)
+    if isinstance(data, dict) and data.get("status") == 429:
+        # Estourou a janela de 30 req/min: espera a janela virar e tenta 1x.
+        time.sleep(30)
+        data = api.fetch_matches_v4(name, tag, region=region)
+    puuid = user.get("puuid")
     if isinstance(data, dict) and data.get("error"):
         logger.warning("Falha v4 %s#%s: %s", name, tag, data.get("error"))
-        return 0
+        if puuid:
+            db.update_ingest_state(puuid, last_error=f"v4: {data.get('error')}",
+                                   last_error_raw=int(time.time()))
+        raise IngestError(f"{name}#{tag}: v4 {data.get('error')}")
     matches = data.get("data") or []
     new = 0
     for match in matches:
@@ -136,7 +147,17 @@ def ingest_user(user, friend_puuids):
                              bundle.get("spatial_rows", []))
         new += 1
         logger.info("Partida %s gravada (%d amigos).", mid, bundle["friends_here"])
+    if puuid:
+        now = int(time.time())
+        fields = {"last_ingested_raw": now, "last_error": None}
+        if new:
+            fields["last_new_match_raw"] = now
+        db.update_ingest_state(puuid, **fields)
     return new
+
+
+class IngestError(Exception):
+    """Falha de API ao ingerir um jogador (vai para o ingest_runs)."""
 
 
 def ensure_puuid(user):
@@ -345,36 +366,44 @@ def deep_backfill_user(user, limit=50, friend_puuids=None):
 
     É o que dá lastro real às métricas profundas: sem isto, clutch/KAST/trade/
     economia/heatmap saem só das ~5 partidas que o /v4/matches devolve.
-    Caro por design (30 req/min) — rodar sob demanda, nunca no caminho crítico.
+    Caro por design (30 req/min) — o poller faz um pouco por execução
+    (deep_rotation); isto aqui é o modo manual, em lote.
     """
     puuid = user.get("puuid")
     if not puuid:
         return {"upgraded": 0, "failed": 0}
     if friend_puuids is None:
         friend_puuids = {u["puuid"] for u in db.get_roster() if u.get("puuid")}
-    ids = db.summary_match_ids_for_puuid(puuid, limit=limit)
     up = fail = 0
-    for mid in ids:
-        data = api.fetch_match_v4(mid, region=user.get("region"))
-        if isinstance(data, dict) and data.get("error"):
-            logger.warning("Backfill profundo %s: %s", mid[:8], data.get("error"))
+    for mid in db.summary_match_ids_for_puuid(puuid, limit=limit):
+        r = _rehydrate(mid, user.get("region"), friend_puuids)
+        if r == 429:
             fail += 1
-            if data.get("status") == 429:
-                break  # rate limit: para e continua na próxima execução
-            continue
-        match = data.get("data") or data
-        if not match.get("rounds"):
+            break  # rate limit: para e continua na próxima execução
+        if r == "ok":
+            up += 1
+        elif r == "fail":
             fail += 1
-            continue
-        if not M.is_standard(match):
-            continue
-        bundle = process_match(match, friend_puuids)
-        db.save_match_bundle(bundle["meta"], bundle["raw_gz"], bundle["match_players"],
-                             bundle["derived"], bundle["round_rows"], bundle["kill_rows"],
-                             bundle.get("spatial_rows", []), upgrade=True)
-        up += 1
-        logger.info("Partida %s re-hidratada (completa).", mid[:8])
     return {"upgraded": up, "failed": fail}
+
+
+def _rehydrate(match_id, region, friend_puuids):
+    """Uma partida de resumo -> completa. Devolve 'ok' | 'fail' | 'skip' | 429."""
+    data = api.fetch_match_v4(match_id, region=region)
+    if isinstance(data, dict) and data.get("error"):
+        logger.warning("Backfill profundo %s: %s", match_id[:8], data.get("error"))
+        return 429 if data.get("status") == 429 else "fail"
+    match = data.get("data") or data
+    if not match.get("rounds"):
+        return "fail"
+    if not M.is_standard(match):
+        return "skip"
+    bundle = process_match(match, friend_puuids)
+    db.save_match_bundle(bundle["meta"], bundle["raw_gz"], bundle["match_players"],
+                         bundle["derived"], bundle["round_rows"], bundle["kill_rows"],
+                         bundle.get("spatial_rows", []), upgrade=True)
+    logger.info("Partida %s re-hidratada (completa).", match_id[:8])
+    return "ok"
 
 
 def deep_backfill_all(limit=50):
@@ -391,42 +420,146 @@ def deep_backfill_all(limit=50):
     return {"players": len(roster), **total}
 
 
-def ingest_all():
-    roster = db.get_roster()
-    if not roster:
-        logger.info("Roster vazio.")
-        return {"players": 0, "new_matches": 0}
+def deep_rotation(roster, friend_puuids, budget):
+    """Deep backfill automático dentro do orçamento da execução.
 
-    friend_puuids = {u["puuid"] for u in roster if u.get("puuid")}
-    total_new = 0
+    Rodízio entre jogadores (uma partida de cada por vez), para ninguém ficar
+    para trás enquanto outro tem 300 partidas de resumo. A mesma partida pode
+    ser de resumo para dois amigos: re-hidrata uma vez só.
+    """
+    if budget <= 0:
+        return {"upgraded": 0, "failed": 0, "rate_limited": False}
+    queues = []
     for u in roster:
-        try:
-            total_new += ingest_user(u, friend_puuids)
-        except Exception as e:
-            logger.warning("Erro ao ingerir %s#%s: %s", u["riot_id"], u["tagline"], e, exc_info=True)
-        for fn, nome in ((ingest_rank_history, "rank history"), (ingest_mmr_profile, "mmr")):
-            try:
-                fn(u)
-            except Exception as e:
-                logger.warning("Erro %s %s#%s: %s", nome, u["riot_id"], u["tagline"], e)
+        ids = db.summary_match_ids_for_puuid(u["puuid"], limit=budget) if u.get("puuid") else []
+        if ids:
+            queues.append((u, list(ids)))
+    seen, up, fail = set(), 0, 0
+    spent = 0
+    while queues and spent < budget:
+        nxt = []
+        for u, ids in queues:
+            if spent >= budget:
+                break
+            while ids and ids[0] in seen:
+                ids.pop(0)
+            if not ids:
+                continue
+            mid = ids.pop(0)
+            seen.add(mid)
+            spent += 1
+            r = _rehydrate(mid, u.get("region"), friend_puuids)
+            if r == 429:
+                return {"upgraded": up, "failed": fail, "rate_limited": True}
+            if r == "ok":
+                up += 1
+            elif r == "fail":
+                fail += 1
+            if ids:
+                nxt.append((u, ids))
+        queues = nxt
+    return {"upgraded": up, "failed": fail, "rate_limited": False}
 
-    logger.info("Ingestão: %d jogadores, %d partidas novas.", len(roster), total_new)
-    return {"players": len(roster), "new_matches": total_new}
+
+def _mmr_due(puuid, had_new):
+    """mmr + mmr-history custam 2 chamadas por jogador. Só quando mudou algo
+    (partida nova) ou o último refresh passou de MMR_REFRESH_HOURS."""
+    if had_new:
+        return True
+    last = (db.get_ingest_state(puuid) or {}).get("last_mmr_raw") or 0
+    return time.time() - last > config.MMR_REFRESH_HOURS * 3600
+
+
+def ingest_all(deep_budget=None):
+    """Execução do poller: partidas novas de todos + RR + deep backfill em rodízio."""
+    deep_budget = config.DEEP_PER_RUN if deep_budget is None else deep_budget
+    api.reset_stats()
+    run_id = db.start_ingest_run("poll")
+    roster = db.get_roster()
+    errors = []
+    total_new = 0
+    deep = {"upgraded": 0, "failed": 0, "rate_limited": False}
+    try:
+        if not roster:
+            logger.info("Roster vazio.")
+            return {"players": 0, "new_matches": 0, "deep_upgraded": 0}
+
+        friend_puuids = {u["puuid"] for u in roster if u.get("puuid")}
+        for u in roster:
+            new = 0
+            try:
+                new = ingest_user(u, friend_puuids)
+                total_new += new
+            except IngestError as e:
+                errors.append(str(e))
+            except Exception as e:
+                logger.warning("Erro ao ingerir %s#%s: %s", u["riot_id"], u["tagline"], e, exc_info=True)
+                errors.append(f"{u['riot_id']}#{u['tagline']}: {e}")
+            if u.get("puuid") and _mmr_due(u["puuid"], new):
+                ok = True
+                for fn, nome in ((ingest_rank_history, "rank history"), (ingest_mmr_profile, "mmr")):
+                    try:
+                        fn(u)
+                    except Exception as e:
+                        ok = False
+                        logger.warning("Erro %s %s#%s: %s", nome, u["riot_id"], u["tagline"], e)
+                        errors.append(f"{u['riot_id']}#{u['tagline']}: {nome} {e}")
+                if ok:
+                    db.update_ingest_state(u["puuid"], last_mmr_raw=int(time.time()))
+
+        try:
+            deep = deep_rotation(roster, friend_puuids, deep_budget)
+        except Exception as e:
+            logger.warning("Erro no deep backfill: %s", e, exc_info=True)
+            errors.append(f"deep: {e}")
+
+        logger.info("Ingestão: %d jogadores, %d partidas novas, %d re-hidratadas, %d chamadas.",
+                    len(roster), total_new, deep["upgraded"], api.stats["calls"])
+        return {"players": len(roster), "new_matches": total_new,
+                "deep_upgraded": deep["upgraded"], "errors": errors}
+    finally:
+        # Erro de um jogador não derruba a execução; só "falha" se nada andou.
+        ok = not errors or total_new > 0 or deep["upgraded"] > 0 or len(errors) < len(roster)
+        db.finish_ingest_run(run_id, players=len(roster), new_matches=total_new,
+                             deep_upgraded=deep["upgraded"], api_calls=api.stats["calls"],
+                             rate_limited=api.stats["rate_limited"], errors=errors, ok=ok)
+
+
+def relink_existing(puuid, friend_puuids):
+    """Recalcula, a partir do raw guardado, as partidas que já estão no banco
+    e em que o novo membro jogou. Sem isto, quem entra no grupo depois fica sem
+    as partidas que jogou com o grupo (a ingestão pula match_id existente)."""
+    n = 0
+    for mid in db.matches_missing_derived(puuid):
+        raw = db.get_raw_match(mid)
+        if not raw:
+            continue
+        b = process_match(raw, friend_puuids)
+        db.save_match_bundle(b["meta"], b["raw_gz"], b["match_players"], b["derived"],
+                             b["round_rows"], b["kill_rows"], b.get("spatial_rows", []),
+                             upgrade=True)
+        n += 1
+    return n
 
 
 def ingest_player_now(member, pages=5):
-    """Baixa os dados de UM jogador recém-adicionado: v4 recente + backfill.
-    friend_puuids = roster inteiro (capta companheiros já rastreados)."""
+    """Baixa os dados de UM jogador recém-aprovado/adicionado: v4 recente +
+    backfill de resumo + rank. friend_puuids = roster inteiro (capta
+    companheiros já rastreados)."""
     roster_puuids = {u["puuid"] for u in db.get_roster() if u.get("puuid")}
     roster_puuids.add(member["puuid"])
     try:
+        relinked = relink_existing(member["puuid"], roster_puuids)
         new = ingest_user(member, roster_puuids)
         back = backfill_user(member, pages=pages)
         ingest_rank_history(member)
         ingest_mmr_profile(member)
-        logger.info("Jogador %s#%s: %d completas, %d resumo.",
-                    member["riot_id"], member["tagline"], new, back)
-        return {"full": new, "summary": back}
+        db.update_ingest_state(member["puuid"], last_mmr_raw=int(time.time()))
+        logger.info("Jogador %s#%s: %d completas, %d resumo, %d já no banco.",
+                    member["riot_id"], member["tagline"], new, back, relinked)
+        return {"full": new, "summary": back, "relinked": relinked}
     except Exception as e:
         logger.warning("Erro ingest_player_now %s#%s: %s", member["riot_id"], member["tagline"], e)
+        db.update_ingest_state(member["puuid"], last_error=str(e)[:300],
+                               last_error_raw=int(time.time()))
         return {"full": 0, "summary": 0, "error": str(e)}

@@ -10,13 +10,16 @@ import os
 import json
 import gzip
 import sqlite3
-from datetime import datetime, timedelta
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 
 from . import config
 
 try:
     import psycopg2
     import psycopg2.extras
+    import psycopg2.pool
 except ImportError:
     psycopg2 = None
 
@@ -24,19 +27,94 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Conexão
 # ---------------------------------------------------------------------------
+# Postgres fica atrás do pooler do Supabase, a ~100 ms de handshake TLS por
+# conexão. Uma rota de grupo abre dezenas de conexões curtas; sem pool, só o
+# handshake custaria segundos. O pool devolve a conexão no close().
+_pool = None
+_pool_lock = threading.Lock()
+_IDLE_PING_S = 60
+_last_used = {}  # id(conexão) -> monotonic; conexão do psycopg2 não aceita atributo
+
+
+class _PooledConn:
+    """Conexão emprestada do pool. close() devolve em vez de fechar."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+    def close(self):
+        raw, self._raw = self._raw, None
+        if raw is None:
+            return
+        broken = bool(raw.closed)
+        if not broken:
+            try:
+                raw.rollback()
+            except Exception:
+                broken = True
+        if broken:
+            _last_used.pop(id(raw), None)
+        else:
+            _last_used[id(raw)] = time.monotonic()
+        _pool.putconn(raw, close=broken)
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = psycopg2.pool.ThreadedConnectionPool(
+                    1, 8, config.DATABASE_URL,
+                    keepalives=1, keepalives_idle=30, keepalives_interval=10,
+                    keepalives_count=3, connect_timeout=15)
+    return _pool
+
+
+def _sqlite_path():
+    if config.SQLITE_PATH:
+        return config.SQLITE_PATH
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "app.db")
+
+
 def get_connection():
-    url = config.DATABASE_URL
-    if not url:
-        db_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "data", "app.db"
-        )
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    if not config.DATABASE_URL:
+        db_path = _sqlite_path()
+        os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         return conn
     if psycopg2 is None:
         raise RuntimeError("psycopg2 ausente mas DATABASE_URL definida.")
-    return psycopg2.connect(url)
+    pool = _get_pool()
+    for _ in range(3):
+        raw = pool.getconn()
+        idle = time.monotonic() - _last_used.get(id(raw), 0)
+        if raw.closed:
+            pool.putconn(raw, close=True)
+            continue
+        if idle > _IDLE_PING_S:
+            # O pooler derruba conexões ociosas; descobrir isso no meio de uma
+            # query de analytics vira 500. Um SELECT 1 barato antes evita.
+            try:
+                raw.cursor().execute("SELECT 1")
+                raw.rollback()
+            except Exception:
+                pool.putconn(raw, close=True)
+                continue
+        return _PooledConn(raw)
+    raise RuntimeError("Não foi possível obter conexão saudável com o banco.")
+
+
+def close_pool():
+    global _pool
+    if _pool is not None:
+        _pool.closeall()
+        _pool = None
+        _last_used.clear()
 
 
 def _is_sqlite(conn):
@@ -85,6 +163,36 @@ def _upsert(conn, table, cols, conflict_cols, row, update=False):
     conn.cursor().execute(sql, row)
 
 
+def _upsert_many(conn, table, cols, conflict_cols, rows, update=False):
+    """_upsert em lote. Uma partida tem ~150 kills e ~90 snapshots: linha a
+    linha seriam centenas de idas e voltas ao Supabase."""
+    if not rows:
+        return
+    # ON CONFLICT DO UPDATE não aceita a mesma chave duas vezes no mesmo lote.
+    idx = [cols.index(c) for c in conflict_cols]
+    dedup = {}
+    for r in rows:
+        dedup[tuple(r[i] for i in idx)] = r
+    rows = list(dedup.values())
+    if update:
+        sets = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in conflict_cols)
+        action = f"DO UPDATE SET {sets}" if sets else "DO NOTHING"
+    else:
+        action = "DO NOTHING"
+    collist = ", ".join(cols)
+    conflict = ", ".join(conflict_cols)
+    if _is_sqlite(conn):
+        ph = ", ".join(["?"] * len(cols))
+        conn.cursor().executemany(
+            f"INSERT INTO {table} ({collist}) VALUES ({ph}) ON CONFLICT ({conflict}) {action}",
+            rows)
+        return
+    psycopg2.extras.execute_values(
+        conn.cursor(),
+        f"INSERT INTO {table} ({collist}) VALUES %s ON CONFLICT ({conflict}) {action}",
+        rows, page_size=500)
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -107,8 +215,27 @@ def init_db():
             puuid TEXT,
             consent INTEGER DEFAULT 1,
             is_admin INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'approved',
             created_at {ts_default},
             UNIQUE (riot_id, tagline)
+        )""")
+
+        # Uma linha por execução do poller — é o que a UI mostra como
+        # "atualizado há X min" e o que denuncia um poller parado.
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS ingest_runs (
+            id {serial_pk},
+            kind TEXT,
+            started_raw BIGINT, finished_raw BIGINT,
+            players INTEGER, new_matches INTEGER, deep_upgraded INTEGER,
+            api_calls INTEGER, rate_limited INTEGER,
+            errors_json TEXT, ok INTEGER
+        )""")
+
+        # Estado de ingestão por jogador (orçamento de cota e status na UI).
+        cur.execute("""CREATE TABLE IF NOT EXISTS ingest_state (
+            puuid TEXT PRIMARY KEY,
+            last_ingested_raw BIGINT, last_new_match_raw BIGINT,
+            last_mmr_raw BIGINT, last_error TEXT, last_error_raw BIGINT
         )""")
 
         cur.execute("""CREATE TABLE IF NOT EXISTS app_config (
@@ -270,7 +397,12 @@ _ADDED_COLUMNS = {
     ],
     "player_round_stats": [
         ("bodyshots", "INTEGER DEFAULT 0"), ("legshots", "INTEGER DEFAULT 0"),
+        ("round_won", "INTEGER"),
     ],
+    # Existentes antes da aprovação viram 'approved' pelo DEFAULT.
+    "users": [("status", "TEXT DEFAULT 'approved'")],
+    # Apelido de quem é rastreado sem login ("Luan" em vez do Riot ID).
+    "tracked_players": [("label", "TEXT")],
 }
 
 
@@ -278,7 +410,10 @@ def _existing_columns(conn, cur, table):
     if _is_sqlite(conn):
         cur.execute(f"PRAGMA table_info({table})")
         return {r[1] for r in cur.fetchall()}
-    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table,))
+    # Sem filtrar o schema, uma tabela homônima em outro schema (public, auth…)
+    # faria a coluna "existir" e o ALTER nunca rodaria.
+    cur.execute("SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = %s AND table_schema = current_schema()", (table,))
     return {r[0] for r in cur.fetchall()}
 
 
@@ -317,15 +452,65 @@ def get_config(key):
 # ---------------------------------------------------------------------------
 # Usuários
 # ---------------------------------------------------------------------------
-def create_user(username, password_hash, riot_id, tagline, region="latam", puuid=None, is_admin=0):
+def create_user(username, password_hash, riot_id, tagline, region="na", puuid=None,
+                is_admin=0, status="pending"):
     conn = get_connection()
     try:
         ph = _ph(conn)
         conn.cursor().execute(
-            f"INSERT INTO users (username, password_hash, riot_id, tagline, region, puuid, is_admin) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph})",
-            (username, password_hash, riot_id, tagline, region, puuid, is_admin),
+            f"INSERT INTO users (username, password_hash, riot_id, tagline, region, puuid, "
+            f"is_admin, status) VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+            (username, password_hash, riot_id, tagline, region, puuid, is_admin, status),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_users(status=None):
+    """Usuários com login (sem o hash da senha), opcionalmente por status."""
+    sql = ("SELECT id, username, riot_id, tagline, region, puuid, is_admin, status, "
+           "created_at FROM users")
+    params = ()
+    if status:
+        sql += " WHERE status = ?"
+        params = (status,)
+    rows = _query(sql + " ORDER BY id", params)
+    for r in rows:
+        if r.get("created_at") is not None:
+            r["created_at"] = str(r["created_at"])
+    return rows
+
+
+def set_user_status(uid, status):
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        cur = conn.cursor()
+        cur.execute(f"UPDATE users SET status = {ph} WHERE id = {ph}", (status, uid))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def set_user_password(uid, password_hash):
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        conn.cursor().execute(f"UPDATE users SET password_hash = {ph} WHERE id = {ph}",
+                              (password_hash, uid))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_user_admin(uid, is_admin):
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        conn.cursor().execute(f"UPDATE users SET is_admin = {ph} WHERE id = {ph}",
+                              (1 if is_admin else 0, uid))
         conn.commit()
     finally:
         conn.close()
@@ -370,14 +555,14 @@ def get_user_by_riot(riot_id, tagline):
 # ---------------------------------------------------------------------------
 # Roster (login users + tracked players) — unificado por puuid
 # ---------------------------------------------------------------------------
-def add_tracked_player(riot_id, tagline, region, puuid, added_by=None):
+def add_tracked_player(riot_id, tagline, region, puuid, added_by=None, label=None):
     conn = get_connection()
     try:
         ph = _ph(conn)
         conn.cursor().execute(
-            f"INSERT INTO tracked_players (puuid, riot_id, tagline, region, added_by) "
-            f"VALUES ({ph},{ph},{ph},{ph},{ph})",
-            (puuid, riot_id, tagline, region, added_by),
+            f"INSERT INTO tracked_players (puuid, riot_id, tagline, region, added_by, label) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph})",
+            (puuid, riot_id, tagline, region, added_by, label),
         )
         conn.commit()
     finally:
@@ -402,14 +587,15 @@ def get_roster():
     region, puuid, consent."""
     out, seen = [], set()
     for u in get_all_users():
-        if u.get("puuid"):
+        # Cadastro pendente não entra no grupo: nem aparece, nem gasta cota.
+        if u.get("puuid") and (u.get("status") or "approved") == "approved":
             out.append({"username": u["username"], "riot_id": u["riot_id"],
                         "tagline": u["tagline"], "region": u.get("region") or "latam",
                         "puuid": u["puuid"], "consent": u.get("consent", 1), "kind": "user"})
             seen.add(u["puuid"])
     for t in _query("SELECT * FROM tracked_players ORDER BY riot_id"):
         if t["puuid"] and t["puuid"] not in seen:
-            out.append({"username": f"{t['riot_id']}", "riot_id": t["riot_id"],
+            out.append({"username": t.get("label") or t["riot_id"], "riot_id": t["riot_id"],
                         "tagline": t["tagline"], "region": t.get("region") or "latam",
                         "puuid": t["puuid"], "consent": t.get("consent", 1), "kind": "tracked"})
             seen.add(t["puuid"])
@@ -445,7 +631,8 @@ def get_all_users():
     conn = get_connection()
     try:
         cur = _dict_cursor(conn)
-        cur.execute("SELECT id, username, riot_id, tagline, region, puuid, consent FROM users ORDER BY username")
+        cur.execute("SELECT id, username, riot_id, tagline, region, puuid, consent, status "
+                    "FROM users ORDER BY username")
         return [_d(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -496,6 +683,11 @@ DERIVED_COLS = [
 ]
 
 
+MP_COLS = ["match_id", "puuid", "name", "tag", "team", "agent", "won", "score",
+           "kills", "deaths", "assists", "headshots", "bodyshots", "legshots",
+           "damage_made", "damage_received", "loadout_avg", "party_id", "tier", "tier_name"]
+
+
 def match_exists(match_id):
     conn = get_connection()
     try:
@@ -527,36 +719,28 @@ def save_match_bundle(meta, raw_gz, match_players, derived, round_rows, kill_row
                  meta["started_at"], meta.get("started_raw"), meta["rounds"], meta["region"],
                  _blob(conn, raw_gz)), update=upgrade)
 
-        mp_cols = ["match_id", "puuid", "name", "tag", "team", "agent", "won", "score",
-                   "kills", "deaths", "assists", "headshots", "bodyshots", "legshots",
-                   "damage_made", "damage_received", "loadout_avg", "party_id", "tier", "tier_name"]
-        for r in match_players:
-            _upsert(conn, "match_players", mp_cols, ["match_id", "puuid"],
-                    tuple(r[c] for c in mp_cols), update=upgrade)
+        _upsert_many(conn, "match_players", MP_COLS, ["match_id", "puuid"],
+                     [tuple(r[c] for c in MP_COLS) for r in match_players], update=upgrade)
 
-        for r in derived:
-            _upsert(conn, "player_match_derived", DERIVED_COLS, ["match_id", "puuid"],
-                    tuple(r.get(c) for c in DERIVED_COLS), update=upgrade)
+        _upsert_many(conn, "player_match_derived", DERIVED_COLS, ["match_id", "puuid"],
+                     [tuple(r.get(c) for c in DERIVED_COLS) for r in derived], update=upgrade)
 
         rs_cols = ["match_id", "round_id", "puuid", "kills", "damage", "headshots",
-                   "bodyshots", "legshots",
-                   "loadout_value", "buy_type", "weapon", "alive_end", "was_traded", "attacker_side"]
-        for r in round_rows:
-            _upsert(conn, "player_round_stats", rs_cols, ["match_id", "round_id", "puuid"],
-                    tuple(r.get(c) for c in rs_cols), update=upgrade)
+                   "bodyshots", "legshots", "loadout_value", "buy_type", "weapon",
+                   "alive_end", "was_traded", "attacker_side", "round_won"]
+        _upsert_many(conn, "player_round_stats", rs_cols, ["match_id", "round_id", "puuid"],
+                     [tuple(r.get(c) for c in rs_cols) for r in round_rows], update=upgrade)
 
         k_cols = ["match_id", "round_id", "order_in_round", "time_ms", "killer_puuid",
                   "victim_puuid", "weapon", "is_first", "is_trade", "vx", "vy"]
-        for r in kill_rows:
-            _upsert(conn, "kills", k_cols, ["match_id", "round_id", "order_in_round"],
-                    tuple(r[c] for c in k_cols))
+        _upsert_many(conn, "kills", k_cols, ["match_id", "round_id", "order_in_round"],
+                     [tuple(r[c] for c in k_cols) for r in kill_rows])
 
         if spatial_rows:
             se_cols = ["match_id", "round_id", "puuid", "event_type", "time_ms", "x", "y", "z", "outcome"]
-            for r in spatial_rows:
-                _upsert(conn, "spatial_events", se_cols,
-                        ["match_id", "round_id", "puuid", "event_type", "time_ms"],
-                        tuple(r.get(c) for c in se_cols))
+            _upsert_many(conn, "spatial_events", se_cols,
+                         ["match_id", "round_id", "puuid", "event_type", "time_ms"],
+                         [tuple(r.get(c) for c in se_cols) for r in spatial_rows])
 
         conn.commit()
     finally:
@@ -573,10 +757,7 @@ def save_summary_match(meta, mp_row, derived_row):
                 ["match_id"],
                 (meta["match_id"], meta["map"], meta["mode"], meta.get("queue"), meta.get("season"),
                  meta["started_at"], meta.get("started_raw"), meta["rounds"], meta["region"], None))
-        mp_cols = ["match_id", "puuid", "name", "tag", "team", "agent", "won", "score",
-                   "kills", "deaths", "assists", "headshots", "bodyshots", "legshots",
-                   "damage_made", "damage_received", "loadout_avg", "party_id", "tier", "tier_name"]
-        _upsert(conn, "match_players", mp_cols, ["match_id", "puuid"], tuple(mp_row[c] for c in mp_cols))
+        _upsert(conn, "match_players", MP_COLS, ["match_id", "puuid"], tuple(mp_row[c] for c in MP_COLS))
         _upsert(conn, "player_match_derived", DERIVED_COLS, ["match_id", "puuid"],
                 tuple(derived_row.get(c) for c in DERIVED_COLS))
         conn.commit()
@@ -619,7 +800,8 @@ def all_match_players_for_puuids(puuids):
         return []
     marks = ",".join("?" for _ in puuids)
     return _query(
-        f"SELECT mp.*, m.map AS map, m.started_raw AS started_raw FROM match_players mp "
+        f"SELECT mp.*, m.map AS map, m.started_raw AS started_raw, m.rounds AS match_rounds, "
+        f"(m.raw_gz IS NOT NULL) AS full_match FROM match_players mp "
         f"JOIN matches m ON m.match_id = mp.match_id WHERE mp.match_id IN "
         f"(SELECT DISTINCT match_id FROM match_players WHERE puuid IN ({marks}))",
         tuple(puuids),
@@ -634,6 +816,21 @@ def round_rows_for_puuid(puuid):
     return _query("SELECT * FROM player_round_stats WHERE puuid = ?", (puuid,))
 
 
+def round_rows_for_matches(match_ids, puuids):
+    """Rounds dos amigos `puuids` nas partidas `match_ids`."""
+    if not match_ids or not puuids:
+        return []
+    pm = ",".join("?" for _ in puuids)
+    ids = list(match_ids)
+    out = []
+    for i in range(0, len(ids), 400):
+        chunk = ids[i:i + 400]
+        marks = ",".join("?" for _ in chunk)
+        out += _query(f"SELECT * FROM player_round_stats WHERE match_id IN ({marks}) "
+                      f"AND puuid IN ({pm})", tuple(chunk) + tuple(puuids))
+    return out
+
+
 def recent_matches_for_puuid(puuid, limit=20):
     return _query("SELECT d.*, m.map, m.mode, m.started_at, m.started_raw "
                   "FROM player_match_derived d JOIN matches m ON m.match_id = d.match_id "
@@ -643,6 +840,10 @@ def recent_matches_for_puuid(puuid, limit=20):
 # ---------------------------------------------------------------------------
 # Cache (TTL) — reuso para chamadas pontuais
 # ---------------------------------------------------------------------------
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def get_cached(cache_key, ttl_minutes=None):
     conn = get_connection()
     try:
@@ -652,7 +853,7 @@ def get_cached(cache_key, ttl_minutes=None):
         if not r:
             return None
         ttl = ttl_minutes if ttl_minutes is not None else config.CACHE_TTL_MINUTES
-        if datetime.utcnow() - datetime.fromisoformat(r[0]) < timedelta(minutes=ttl):
+        if _utcnow() - datetime.fromisoformat(r[0]) < timedelta(minutes=ttl):
             return json.loads(r[1])
         return None
     finally:
@@ -663,7 +864,7 @@ def set_cached(cache_key, data):
     conn = get_connection()
     try:
         _upsert(conn, "cache_telemetry", ["cache_key", "last_updated", "payload_json"], ["cache_key"],
-                (cache_key, datetime.utcnow().isoformat(), json.dumps(data)), update=True)
+                (cache_key, _utcnow().isoformat(), json.dumps(data)), update=True)
         conn.commit()
     finally:
         conn.close()
@@ -712,6 +913,16 @@ def recent_match_ids(limit=5):
     )]
 
 
+def matches_missing_derived(puuid):
+    """Partidas completas já no banco em que o puuid jogou mas não tem métricas
+    — acontece quando alguém entra no grupo depois de já ter jogado com ele."""
+    return [r["match_id"] for r in _query(
+        "SELECT mp.match_id FROM match_players mp JOIN matches m ON m.match_id = mp.match_id "
+        "WHERE mp.puuid = ? AND m.raw_gz IS NOT NULL AND NOT EXISTS ("
+        "SELECT 1 FROM player_match_derived d WHERE d.match_id = mp.match_id AND d.puuid = mp.puuid)",
+        (puuid,))]
+
+
 def derived_for_puuid_match(match_id):
     return _query("SELECT * FROM player_match_derived WHERE match_id = ?", (match_id,))
 
@@ -752,9 +963,8 @@ def save_rank_history(rows):
         return 0
     conn = get_connection()
     try:
-        for r in rows:
-            _upsert(conn, "rank_history", RANK_COLS, ["puuid", "match_id"],
-                    tuple(r.get(c) for c in RANK_COLS), update=True)
+        _upsert_many(conn, "rank_history", RANK_COLS, ["puuid", "match_id"],
+                     [tuple(r.get(c) for c in RANK_COLS) for r in rows], update=True)
         conn.commit()
         return len(rows)
     finally:
@@ -787,9 +997,8 @@ def save_rank_seasons(rows):
         return 0
     conn = get_connection()
     try:
-        for r in rows:
-            _upsert(conn, "rank_season", SEASON_COLS, ["puuid", "season"],
-                    tuple(r.get(c) for c in SEASON_COLS), update=True)
+        _upsert_many(conn, "rank_season", SEASON_COLS, ["puuid", "season"],
+                     [tuple(r.get(c) for c in SEASON_COLS) for r in rows], update=True)
         conn.commit()
         return len(rows)
     finally:
@@ -905,3 +1114,139 @@ def orphan_matches_cleanup():
         return n
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Status da ingestão (poller) — o que a UI mostra como "atualizado há X min"
+# ---------------------------------------------------------------------------
+def start_ingest_run(kind):
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        cur = conn.cursor()
+        sql = f"INSERT INTO ingest_runs (kind, started_raw, ok) VALUES ({ph},{ph},0)"
+        if _is_sqlite(conn):
+            cur.execute(sql, (kind, int(time.time())))
+            rid = cur.lastrowid
+        else:
+            cur.execute(sql + " RETURNING id", (kind, int(time.time())))
+            rid = cur.fetchone()[0]
+        conn.commit()
+        return rid
+    finally:
+        conn.close()
+
+
+def finish_ingest_run(run_id, players=0, new_matches=0, deep_upgraded=0, api_calls=0,
+                      rate_limited=0, errors=None, ok=True):
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        conn.cursor().execute(
+            f"UPDATE ingest_runs SET finished_raw={ph}, players={ph}, new_matches={ph}, "
+            f"deep_upgraded={ph}, api_calls={ph}, rate_limited={ph}, errors_json={ph}, ok={ph} "
+            f"WHERE id={ph}",
+            (int(time.time()), players, new_matches, deep_upgraded, api_calls, rate_limited,
+             json.dumps(errors or [], ensure_ascii=False)[:4000], 1 if ok else 0, run_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def recent_ingest_runs(limit=10):
+    rows = _query("SELECT * FROM ingest_runs ORDER BY id DESC LIMIT ?", (limit,))
+    for r in rows:
+        try:
+            r["errors"] = json.loads(r.pop("errors_json") or "[]")
+        except ValueError:
+            r["errors"] = []
+    return rows
+
+
+def get_ingest_state(puuid):
+    rows = _query("SELECT * FROM ingest_state WHERE puuid = ?", (puuid,))
+    return rows[0] if rows else {}
+
+
+def all_ingest_state():
+    return {r["puuid"]: r for r in _query("SELECT * FROM ingest_state")}
+
+
+STATE_COLS = ["puuid", "last_ingested_raw", "last_new_match_raw", "last_mmr_raw",
+              "last_error", "last_error_raw"]
+
+
+def update_ingest_state(puuid, **fields):
+    """Mescla campos no estado do jogador (só os passados mudam)."""
+    cur = get_ingest_state(puuid) or {"puuid": puuid}
+    cur.update(fields)
+    conn = get_connection()
+    try:
+        _upsert(conn, "ingest_state", STATE_COLS, ["puuid"],
+                tuple(cur.get(c) for c in STATE_COLS), update=True)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def coverage_by_puuid():
+    """puuid -> (completas, total) para o roster inteiro numa query só."""
+    out = {}
+    for r in _query("SELECT puuid, full_data, COUNT(*) AS n FROM player_match_derived "
+                    "GROUP BY puuid, full_data"):
+        full, total = out.get(r["puuid"], (0, 0))
+        out[r["puuid"]] = (full + (r["n"] if r["full_data"] else 0), total + r["n"])
+    return out
+
+
+def last_match_raw_by_puuid():
+    return {r["puuid"]: r["last"] for r in _query(
+        "SELECT d.puuid, MAX(m.started_raw) AS last FROM player_match_derived d "
+        "JOIN matches m ON m.match_id = d.match_id GROUP BY d.puuid")}
+
+
+# ---------------------------------------------------------------------------
+# Detalhe de partida / comparação com o lobby
+# ---------------------------------------------------------------------------
+def get_match_row(match_id):
+    rows = _query("SELECT match_id, map, mode, queue, season, started_at, started_raw, "
+                  "rounds, region, raw_gz IS NOT NULL AS has_raw FROM matches "
+                  "WHERE match_id = ?", (match_id,))
+    return rows[0] if rows else None
+
+
+def match_players_for_match(match_id):
+    return _query("SELECT * FROM match_players WHERE match_id = ?", (match_id,))
+
+
+def kills_for_matches(match_ids):
+    if not match_ids:
+        return []
+    ids = list(match_ids)
+    out = []
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        marks = ",".join("?" for _ in chunk)
+        out += _query(f"SELECT * FROM kills WHERE match_id IN ({marks})", tuple(chunk))
+    return out
+
+
+def lobby_rows_for_puuid(puuid):
+    """Todos os 10 jogadores das partidas COMPLETAS em que o puuid jogou."""
+    return _query(
+        "SELECT mp.*, m.rounds AS match_rounds, m.started_raw FROM match_players mp "
+        "JOIN matches m ON m.match_id = mp.match_id "
+        "WHERE m.raw_gz IS NOT NULL AND mp.match_id IN "
+        "(SELECT match_id FROM match_players WHERE puuid = ?)", (puuid,))
+
+
+def tier_baselines():
+    """Agregado de todos os jogadores já vistos, por tier (partidas completas)."""
+    return _query(
+        "SELECT mp.tier AS tier, COUNT(*) AS n, SUM(mp.score) AS score, "
+        "SUM(mp.kills) AS kills, SUM(mp.deaths) AS deaths, SUM(mp.assists) AS assists, "
+        "SUM(mp.damage_made) AS damage, SUM(mp.headshots) AS hs, "
+        "SUM(mp.bodyshots) AS bs, SUM(mp.legshots) AS ls, SUM(m.rounds) AS rounds "
+        "FROM match_players mp JOIN matches m ON m.match_id = mp.match_id "
+        "WHERE m.raw_gz IS NOT NULL AND mp.tier IS NOT NULL AND mp.tier > 0 "
+        "GROUP BY mp.tier")

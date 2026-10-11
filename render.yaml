@@ -1,26 +1,18 @@
-# Blueprint do Render — sobe a API e o banco de uma vez.
+# Blueprint do Render — sobe a API (o banco fica no Supabase).
 #
-# Uso: render.com → New + → Blueprint → conecte este repositório.
-# O Render lê este arquivo, cria o Postgres, injeta a DATABASE_URL sozinho e
-# pergunta só o que é segredo (a chave da HenrikDev) e a URL do frontend.
+# Uso: render.com → New + → Blueprint → conecte este repositório. O Render
+# pergunta os segredos marcados com `sync: false`.
 #
-# Por que o banco vem aqui e não no Supabase: assim é UM cadastro só, e a
-# DATABASE_URL nunca precisa ser copiada à mão. Se um dia quiser trocar por
-# Supabase (ou qualquer outro Postgres), basta remover o bloco `databases:`
-# abaixo, trocar o `fromDatabase` por `sync: false` e colar a URI de lá.
-
-databases:
-  - name: vavapprt-db
-    databaseName: vavapprt
-    user: vavapprt
-    plan: free
+# Por que o banco NÃO fica no Render: o Postgres free do Render expira em 30
+# dias (foi o que derrubou a produção em set/2026). O Supabase free não expira.
+# DATABASE_URL = URI do *session pooler* do Supabase (IPv4), com sslmode=require.
 
 services:
   - type: web
     name: vavapprt-api
     runtime: python
     plan: free
-    region: oregon
+    region: oregon # mesma região do Supabase (us-west-2): latência ~1 ms
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
@@ -28,11 +20,11 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: vavapprt-db
-          property: connectionString
-      - key: HENRIKDEV_API_KEY # Basic Key da HenrikDev — você cola no deploy
+      - key: DATABASE_URL # URI do session pooler do Supabase
+        sync: false
+      - key: HENRIKDEV_API_KEY # Basic Key da HenrikDev
+        sync: false
+      - key: ADMIN_RIOT_ID # Nome#TAG de quem administra o grupo
         sync: false
       - key: JWT_SECRET # gerado pelo Render, ninguém precisa inventar
         generateValue: true

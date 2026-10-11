@@ -7,7 +7,7 @@ class RegisterIn(BaseModel):
     password: str = Field(min_length=6, max_length=128)
     riot_id: str = Field(min_length=1, max_length=32)
     tagline: str = Field(min_length=1, max_length=10)
-    region: str = "latam"
+    region: str = "na"
 
 
 class LoginIn(BaseModel):
@@ -19,6 +19,7 @@ class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
     username: str
+    status: str = "approved"
 
 
 class MeOut(BaseModel):
@@ -28,12 +29,19 @@ class MeOut(BaseModel):
     tagline: str
     region: str
     is_admin: bool
+    status: str = "approved"
 
 
 class AddPlayerIn(BaseModel):
     riot_id: str = Field(min_length=1, max_length=32)
     tagline: str = Field(min_length=1, max_length=10)
-    region: str = "latam"
+    region: str = "na"
+    label: str | None = Field(default=None, max_length=32)
+
+
+class PasswordIn(BaseModel):
+    current: str
+    new: str = Field(min_length=6, max_length=128)
 
 
 class MemberRef(BaseModel):
@@ -43,6 +51,11 @@ class MemberRef(BaseModel):
 
 class GroupDetailIn(BaseModel):
     members: list[MemberRef] = Field(min_length=2, max_length=5)
+
+
+class MembersIn(BaseModel):
+    """Quem está jogando agora (pré-fila) ou o stack a analisar."""
+    members: list[MemberRef] = Field(min_length=1, max_length=5)
 
 
 class GoalIn(BaseModel):

@@ -1,5 +1,5 @@
 """Autenticação: hash de senha (bcrypt) e tokens JWT de sessão."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import bcrypt
 from jose import jwt, JWTError
@@ -19,7 +19,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_token(user_id: int, username: str) -> str:
-    expire = datetime.utcnow() + timedelta(hours=config.JWT_EXPIRE_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(hours=config.JWT_EXPIRE_HOURS)
     payload = {"sub": str(user_id), "username": username, "exp": expire}
     return jwt.encode(payload, config.JWT_SECRET, algorithm=config.JWT_ALGORITHM)
 

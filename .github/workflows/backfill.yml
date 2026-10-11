@@ -28,5 +28,5 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           HENRIKDEV_API_KEY: ${{ secrets.HENRIKDEV_API_KEY }}
-          DEFAULT_REGION: ${{ vars.DEFAULT_REGION || 'latam' }}
+          DEFAULT_REGION: ${{ vars.DEFAULT_REGION || 'na' }}
         run: python -m app.poll backfill ${{ github.event.inputs.pages }}
