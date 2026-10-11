@@ -199,8 +199,11 @@ def backfill_user(user, pages=3, size=20):
             break
         for lm in items:
             mid = (lm.get("meta") or {}).get("id")
-            if not mid or db.match_exists(mid):
-                continue  # já temos (completa ou resumo)
+            # Pula só se ESTE jogador já tem a partida. Testar match_exists
+            # deixava o 2º amigo de uma partida compartilhada sem a linha dele,
+            # e o stack sumia do histórico do grupo.
+            if not mid or db.player_has_match(mid, puuid):
+                continue
             rows = M.lifetime_summary(lm, puuid)
             if not rows:
                 continue  # modo não-padrão

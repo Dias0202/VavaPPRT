@@ -88,3 +88,25 @@ def test_backfill_espera_rate_limit_e_tenta_de_novo(client, henrik, monkeypatch)
     monkeypatch.setattr("app.valorant_api.fetch_lifetime", lifetime)
     ingest.backfill_user(db.get_roster()[0], pages=1)
     assert calls == [1, 1]
+
+
+def test_backfill_grava_partida_compartilhada_para_o_segundo_amigo(client, henrik, monkeypatch):
+    """A mesma partida no histórico de dois amigos: os dois precisam da linha."""
+    register(client, "admin", "Admin", "0001")
+    from app import metrics as M
+    mid = "00000000-0000-4000-9000-0000000000ff"
+    lm = {"meta": {"id": mid, "map": {"name": "Bind"}, "mode": "Competitive",
+                   "started_at": "2026-01-01T00:00:00.000Z", "region": "na",
+                   "season": {"short": "e10a1"}},
+          "stats": {"puuid": None, "team": "red", "character": {"name": "Jett"},
+                    "kills": 10, "deaths": 10, "assists": 2, "score": 3000,
+                    "shots": {"head": 5, "body": 20, "leg": 1},
+                    "damage": {"made": 2500, "received": 2600}, "tier": 15},
+          "teams": {"red": 13, "blue": 9}}
+    for pu in (ADMIN_PUUID, "00000000-0000-4000-8000-000000000002"):
+        row = dict(lm, stats=dict(lm["stats"], puuid=pu))
+        rows = M.lifetime_summary(row, pu)
+        assert rows and rows["mp"]["team"] == "Red"
+        assert not db.player_has_match(mid, pu)
+        db.save_summary_match(rows["meta"], rows["mp"], rows["derived"])
+        assert db.player_has_match(mid, pu)

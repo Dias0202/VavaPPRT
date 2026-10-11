@@ -688,6 +688,18 @@ MP_COLS = ["match_id", "puuid", "name", "tag", "team", "agent", "won", "score",
            "damage_made", "damage_received", "loadout_avg", "party_id", "tier", "tier_name"]
 
 
+def player_has_match(match_id, puuid):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        ph = _ph(conn)
+        cur.execute(f"SELECT 1 FROM player_match_derived WHERE match_id = {ph} AND puuid = {ph}",
+                    (match_id, puuid))
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
 def match_exists(match_id):
     conn = get_connection()
     try:

@@ -506,7 +506,9 @@ def lifetime_summary(lm, puuid):
     }
     mp = {
         "match_id": meta["match_id"], "puuid": puuid, "name": st.get("name"), "tag": st.get("tag"),
-        "team": st.get("team"), "agent": agent, "won": won, "score": st.get("score", 0),
+        # v4 grava "Red"/"Blue"; o lifetime às vezes vem em minúsculas. Mesmo
+        # time precisa comparar igual entre partida completa e de resumo.
+        "team": team.capitalize() or None, "agent": agent, "won": won, "score": st.get("score", 0),
         "kills": st.get("kills", 0), "deaths": st.get("deaths", 0), "assists": st.get("assists", 0),
         "headshots": shots.get("head", 0), "bodyshots": shots.get("body", 0), "legshots": shots.get("leg", 0),
         "damage_made": dmg.get("made", 0), "damage_received": dmg.get("received", 0),
