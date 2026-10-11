@@ -5,12 +5,13 @@ name: Publicar frontend (GitHub Pages)
 # (Settings → Secrets and variables → Actions → Variables). Enquanto ela não
 # existir o site sobe e explica que falta ligar o backend.
 
+# Só publica depois que o CI (testes + build) passa na main: site quebrado
+# nunca chega ao ar por um push com teste vermelho.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    paths:
-      - "frontend/**"
-      - ".github/workflows/pages.yml"
   workflow_dispatch: {}
 
 permissions:
@@ -24,9 +25,12 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
