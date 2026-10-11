@@ -98,28 +98,30 @@ export function WeaponIcon({ name, width = 92, height = 34 }) {
 }
 
 export function MatchRow({ m }) {
-  const won = m.won; // was m.was_win — API returns `won`
+  const won = m.won;
   return (
     <motion.div
-      className={`match ${won ? "w" : "l"}`}
       initial={{ opacity: 0, x: -6 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.18 }}
       whileHover={{ x: 3, transition: { duration: 0.1 } }}
     >
-      <div className="edge" />
-      <AgentAvatar name={m.agent} size={44} />
-      <div className="meta">
-        <div className="map">{m.map || "—"}</div>
-        <div className="mode">{m.mode || ""}</div>
-      </div>
-      <div className="kda">
-        {m.kills}<span className="muted">/</span>{m.deaths}<span className="muted">/</span>{m.assists}
-        <div className="muted" style={{ fontSize: 11 }}>ACS {m.acs}</div>
-      </div>
-      <div className={`res ${won ? "win" : "loss"}`}>
-        {won ? "Vitória" : "Derrota"}
-      </div>
+      <Link to={`/partida/${m.match_id}`} className={`match ${won ? "w" : "l"}`}
+        title="Abrir a partida: placar, rounds e economia">
+        <div className="edge" />
+        <AgentAvatar name={m.agent} size={44} />
+        <div className="meta">
+          <div className="map">{m.map || "—"}</div>
+          <div className="mode">{m.mode || ""}</div>
+        </div>
+        <div className="kda">
+          {m.kills}<span className="muted">/</span>{m.deaths}<span className="muted">/</span>{m.assists}
+          <div className="muted" style={{ fontSize: 11 }}>ACS {m.acs}</div>
+        </div>
+        <div className={`res ${won ? "win" : "loss"}`}>
+          {won ? "Vitória" : "Derrota"}
+        </div>
+      </Link>
     </motion.div>
   );
 }

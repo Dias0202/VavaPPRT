@@ -2,6 +2,7 @@
 // apagar puuid e todos os dados associados, a pedido da própria pessoa.
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
@@ -12,7 +13,7 @@ import { useAuth } from "../lib/auth";
  * está na fila competitiva. Quem administra o grupo marca o que está no ar, e
  * perfil, insights e plano de fila passam a falar só desses.
  */
-function MapPoolAdmin() {
+export function MapPoolAdmin() {
   const [all, setAll] = useState([]);
   const [pool, setPool] = useState([]);
   const [saved, setSaved] = useState(null);
@@ -72,6 +73,47 @@ function MapPoolAdmin() {
   );
 }
 
+function PasswordForm() {
+  const [cur, setCur] = useState("");
+  const [next, setNext] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setBusy(true); setMsg(null);
+    try {
+      await api.changePassword(cur, next);
+      setMsg({ ok: true, text: "Senha alterada." });
+      setCur(""); setNext("");
+    } catch (e) {
+      setMsg({ ok: false, text: e.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <h3 className="section-h">Senha</h3>
+      <form onSubmit={submit} className="panel" style={{ maxWidth: 460, marginBottom: 26 }}>
+        {msg && <div className={msg.ok ? "ins good" : "error-box"}>{msg.text}</div>}
+        <div className="field">
+          <label>Senha atual</label>
+          <input type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" />
+        </div>
+        <div className="field">
+          <label>Nova senha (mín. 6)</label>
+          <input type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" />
+        </div>
+        <button className="btn" disabled={busy || !cur || next.length < 6}>
+          {busy ? "Salvando…" : "Trocar senha"}
+        </button>
+      </form>
+    </>
+  );
+}
+
 export default function Account() {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
@@ -109,7 +151,14 @@ export default function Account() {
         </p>
       </div>
 
-      {user?.is_admin && <MapPoolAdmin />}
+      {user?.is_admin && (
+        <p className="muted" style={{ marginBottom: 20 }}>
+          Você administra o grupo: aprovações, roster e rotação de mapas ficam em{" "}
+          <Link to="/admin" style={{ color: "var(--signal)" }}>Admin</Link>.
+        </p>
+      )}
+
+      <PasswordForm />
 
       <h3 className="section-h">Privacidade</h3>
       <p className="muted" style={{ maxWidth: 620, marginBottom: 16 }}>

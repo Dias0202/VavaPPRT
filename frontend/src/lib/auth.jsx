@@ -37,8 +37,13 @@ export function AuthProvider({ children }) {
     setUser(null);
   }
 
+  // Revalida /me (ex.: cadastro pendente conferindo se já foi aprovado).
+  async function refresh() {
+    setUser(await api.me());
+  }
+
   return (
-    <AuthCtx.Provider value={{ user, loading, login, register, logout }}>
+    <AuthCtx.Provider value={{ user, loading, login, register, logout, refresh }}>
       {children}
     </AuthCtx.Provider>
   );

@@ -22,32 +22,77 @@ export function setToken(t) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+// Estado do servidor para a UI. O Render free hiberna depois de 15 min sem
+// uso e leva ~30–60 s para acordar: a requisição não falha, ela DEMORA. Em vez
+// de um erro de timeout, a interface mostra "acordando o servidor".
+let serverState = "ok"; // "ok" | "waking"
+let slowInflight = 0;
+const listeners = new Set();
+function setServerState(s) {
+  if (s === serverState) return;
+  serverState = s;
+  listeners.forEach((fn) => fn(s));
+}
+export function onServerState(fn) {
+  listeners.add(fn);
+  fn(serverState);
+  return () => listeners.delete(fn);
+}
+
+const SLOW_MS = 4000;      // depois disso, provavelmente é o servidor acordando
+const TIMEOUT_MS = 75000;  // cold start do Render cabe aqui com folga
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function request(path, { method = "GET", body } = {}) {
   const headers = { "Content-Type": "application/json" };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
   let res;
+  let isSlow = false;
+  const slow = setTimeout(() => {
+    isSlow = true;
+    slowInflight += 1;
+    setServerState("waking");
+  }, SLOW_MS);
   try {
-    // Timeout explícito: um backend inalcançável costuma PENDURAR o preflight
-    // em vez de recusar. Sem isto o botão fica travado sem dizer nada.
-    res = await fetch(`${BASE}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(20000),
-    });
-  } catch {
-    if (apiMisconfigured) {
-      throw new Error(
-        "Este site ainda não está ligado a um servidor. Quem administra o grupo " +
-          "precisa definir a variável VITE_API_URL com o endereço da API e republicar."
-      );
+    for (let attempt = 0; ; attempt++) {
+      try {
+        // Timeout explícito: um backend inalcançável costuma PENDURAR o
+        // preflight em vez de recusar. Sem isto o botão fica travado.
+        res = await fetch(`${BASE}${path}`, {
+          method,
+          headers,
+          body: body ? JSON.stringify(body) : undefined,
+          signal: AbortSignal.timeout(TIMEOUT_MS),
+        });
+      } catch (e) {
+        if (apiMisconfigured) {
+          throw new Error(
+            "Este site ainda não está ligado a um servidor. Quem administra o grupo " +
+              "precisa definir a variável VITE_API_URL com o endereço da API e republicar."
+          );
+        }
+        if (attempt < 1 && method === "GET") {
+          await sleep(3000);
+          continue;
+        }
+        throw new Error(
+          `Servidor não respondeu (${BASE}). Ele pode estar acordando — ` +
+            "tente de novo em alguns segundos."
+        );
+      }
+      // Durante deploy/boot o proxy do Render devolve 502/503 por alguns segundos.
+      if ((res.status === 502 || res.status === 503) && method === "GET" && attempt < 3) {
+        await sleep(4000);
+        continue;
+      }
+      break;
     }
-    throw new Error(
-      `Servidor não respondeu (${BASE}). Ele pode estar hibernando — ` +
-        "tente de novo em alguns segundos."
-    );
+  } finally {
+    clearTimeout(slow);
+    if (isSlow) slowInflight -= 1;
+    if (slowInflight === 0) setServerState("ok");
   }
 
   let data = null;
@@ -73,6 +118,8 @@ export const api = {
   register: (payload) => request("/auth/register", { method: "POST", body: payload }),
   login: (payload) => request("/auth/login", { method: "POST", body: payload }),
   me: () => request("/me"),
+  changePassword: (current, next) =>
+    request("/me/password", { method: "PUT", body: { current, new: next } }),
   players: () => request("/players"),
   leaderboard: () => request("/leaderboard"),
   synergy: () => request("/group/synergy"),
@@ -90,8 +137,14 @@ export const api = {
   recent: (r, t) => request(p(r, t, "/recent")),
   heatmap: (r, t, map) => request(p(r, t, `/heatmap${map ? `?map=${encodeURIComponent(map)}` : ""}`)),
   spatial: (r, t, map) => request(p(r, t, `/spatial${map ? `?map=${encodeURIComponent(map)}` : ""}`)),
-  groupCorrelation: () => request("/group/correlation"),
-  roundAnalysis: () => request("/group/round-analysis"),
+  groupCorrelation: (members) =>
+    members ? request("/group/correlation", { method: "POST", body: { members } })
+            : request("/group/correlation"),
+  synergyMatrix: () => request("/group/synergy-matrix"),
+  preQueue: (members) => request("/group/pre-queue", { method: "POST", body: { members } }),
+  match: (id) => request(`/matches/${encodeURIComponent(id)}`),
+  vsLobby: (r, t) => request(p(r, t, "/vs-lobby")),
+  ingestStatus: () => request("/status/ingest"),
   validateMetrics: (limit = 5) => request(`/validate/metrics?limit=${limit}`),
 
   // Progresso no tempo
@@ -122,4 +175,17 @@ export const api = {
     request("/me", { method: "DELETE", body: { password, confirm: "APAGAR" } }),
   removeTracked: (r, t) =>
     request(`/roster/${encodeURIComponent(r)}/${encodeURIComponent(t)}`, { method: "DELETE" }),
+
+  // Administração
+  adminUsers: (status) => request(`/admin/users${status ? `?status=${status}` : ""}`),
+  approveUser: (id) => request(`/admin/users/${id}/approve`, { method: "POST" }),
+  rejectUser: (id) => request(`/admin/users/${id}/reject`, { method: "POST" }),
+  setAdmin: (id, value) => request(`/admin/users/${id}/admin?value=${value}`, { method: "POST" }),
 };
+
+export const pairPath = (a, b) =>
+  `/dupla/${encodeURIComponent(a.riot_id)}/${encodeURIComponent(a.tagline)}/` +
+  `${encodeURIComponent(b.riot_id)}/${encodeURIComponent(b.tagline)}`;
+
+export const playerPath = (m) =>
+  `/jogador/${encodeURIComponent(m.riot_id)}/${encodeURIComponent(m.tagline)}`;

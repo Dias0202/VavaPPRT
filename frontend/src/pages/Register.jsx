@@ -2,13 +2,13 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 
-const REGIONS = ["latam", "br", "na", "eu", "ap", "kr"];
+const REGIONS = ["na", "latam", "br", "eu", "ap", "kr"];
 
 export default function Register() {
   const { register } = useAuth();
   const nav = useNavigate();
   const [f, setF] = useState({
-    username: "", password: "", riot_id: "", tagline: "", region: "latam",
+    username: "", password: "", riot_id: "", tagline: "", region: "na",
   });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -41,8 +41,8 @@ export default function Register() {
           ENTRA<br />PRO<br /><span className="accent">RANKING.</span>
         </div>
         <p className="muted" style={{ maxWidth: 360 }}>
-          Vincule seu Riot ID uma vez. O bot acompanha suas partidas e te coloca
-          na tabela do grupo automaticamente.
+          Vincule seu Riot ID uma vez. Depois que o admin do grupo aprovar, suas
+          partidas entram sozinhas na tabela.
         </p>
       </aside>
 

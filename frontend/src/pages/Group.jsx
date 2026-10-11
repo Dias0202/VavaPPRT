@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { api } from "../lib/api";
+import { Link, useNavigate } from "react-router-dom";
+import { motion } from "framer-motion";
+import { api, pairPath } from "../lib/api";
 import { Conf, WrBar, Loader, Empty } from "../components/blocks";
 
-const REGIONS = ["latam", "br", "na", "eu", "ap", "kr"];
+const REGIONS = ["na", "latam", "br", "eu", "ap", "kr"];
 
 export default function Group() {
   const [squads, setSquads] = useState(null);
@@ -33,14 +34,15 @@ export default function Group() {
       )}
       {sel && <GroupDetail members={sel} onClose={() => setSel(null)} />}
 
-      <CorrelationPanel />
+      <SynergyMatrix />
+      <CorrelationPanel members={sel} />
     </>
   );
 }
 
 // ---------- Adicionar pessoa ----------
 function AddPlayer({ onAdded }) {
-  const [f, setF] = useState({ riot_id: "", tagline: "", region: "na" });
+  const [f, setF] = useState({ riot_id: "", tagline: "", region: "na", label: "" });
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -54,9 +56,10 @@ function AddPlayer({ onAdded }) {
         riot_id: f.riot_id.trim(),
         tagline: f.tagline.trim().replace(/^#/, ""),
         region: f.region,
+        label: f.label.trim() || undefined,
       });
       setMsg({ ok: true, text: r.message || "Adicionado. Baixando dados…" });
-      setF({ riot_id: "", tagline: "", region: f.region });
+      setF({ riot_id: "", tagline: "", region: f.region, label: "" });
       setTimeout(onAdded, 8000);
       setTimeout(onAdded, 25000);
     } catch (e) {
@@ -77,6 +80,10 @@ function AddPlayer({ onAdded }) {
         <div className="field" style={{ margin: 0, flex: "1 1 90px" }}>
           <label>Tag</label>
           <input placeholder="0000" value={f.tagline} onChange={set("tagline")} />
+        </div>
+        <div className="field" style={{ margin: 0, flex: "1 1 120px" }}>
+          <label>Apelido (opcional)</label>
+          <input placeholder="Ex.: Luan" value={f.label} onChange={set("label")} />
         </div>
         <div className="field" style={{ margin: 0, flex: "0 1 110px" }}>
           <label>Região</label>
@@ -243,7 +250,15 @@ function GroupDetail({ members, onClose }) {
             </div>
           )}
 
-          <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", alignItems: "start", marginTop: 18 }}>
+          {members.length === 2 && (
+            <p style={{ marginTop: 6 }}>
+              <Link className="btn ghost" to={pairPath(members[0], members[1])}>
+                Abrir análise da dupla →
+              </Link>
+            </p>
+          )}
+
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", alignItems: "start", marginTop: 18 }}>
             <section>
               <div className="section-title"><span className="eyebrow">Mapas — o que filar / evitar</span></div>
               <div className="panel">
@@ -273,95 +288,121 @@ function GroupDetail({ members, onClose }) {
   );
 }
 
-// ---------- Motor de Correlação de Agentes ----------
-function CorrelationPanel() {
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState("");
-  const [open, setOpen] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-
-  function load() {
-    if (loaded) return;
-    setLoaded(true);
-    api.groupCorrelation().then(setData).catch((e) => setErr(e.message));
-  }
-
+// ---------- Matriz de sinergia (N×N) ----------
+function SynergyMatrix() {
+  const [d, setD] = useState(null);
+  const nav = useNavigate();
+  useEffect(() => { api.synergyMatrix().then(setD).catch(() => setD(null)); }, []);
+  if (!d || d.players.length < 2) return null;
+  const cell = (a, b) => d.cells.find((c) => (c.a === a.id && c.b === b.id) || (c.a === b.id && c.b === a.id));
   return (
     <div style={{ marginTop: 28 }}>
-      <div className="flex between" style={{ marginBottom: 14 }}>
-        <div className="section-title">
-          <span className="eyebrow">Motor de Correlação de Agentes</span>
-        </div>
-        <button
-          className="btn ghost"
-          style={{ padding: "6px 14px" }}
-          onClick={() => { setOpen(!open); load(); }}
-        >
-          {open ? "Ocultar" : "Ver Correlações"}
-        </button>
+      <div className="section-title"><span className="eyebrow">Sinergia por dupla — WR no mesmo time · clique para abrir</span></div>
+      <div className="panel" style={{ overflowX: "auto" }}>
+        <table className="matrix">
+          <thead>
+            <tr>
+              <th />
+              {d.players.map((p) => <th key={p.id} scope="col"><span>{p.label}</span></th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {d.players.map((a) => (
+              <tr key={a.id}>
+                <th scope="row">{a.label}</th>
+                {d.players.map((b) => {
+                  if (a.id === b.id) return <td key={b.id} className="self" />;
+                  const c = cell(a, b);
+                  if (!c) return <td key={b.id} className="none" title="Nunca jogaram juntos">·</td>;
+                  const tone = c.confidence !== "high" ? "low" : c.win_rate >= 55 ? "good" : c.win_rate < 45 ? "bad" : "mid";
+                  return (
+                    <td key={b.id} className={`hit ${tone}`} title={`${a.label} + ${b.label}: ${c.win_rate}% em ${c.games} jogos`}>
+                      <button onClick={() => nav(pairPath(a, b))}>
+                        {c.win_rate}<small>%</small>
+                        <span>{c.games}j</span>
+                      </button>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+          Cinza = menos de 4 jogos juntos (ainda não conclua nada).
+        </p>
       </div>
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0, height: 0, overflow: "hidden" }}
-            animate={{ opacity: 1, height: "auto", overflow: "visible" }}
-            exit={{ opacity: 0, height: 0, overflow: "hidden" }}
-            transition={{ duration: 0.28 }}
-          >
-            {err && <div className="error-box">{err}</div>}
-            {!data ? <Loader /> : (
-              <>
-                <div className="panel" style={{ marginBottom: 16 }}>
-                  <div className="section-title"><span className="eyebrow">Impacto do First Blood no grupo</span></div>
-                  {Object.entries(data.first_blood_impact || {}).map(([key, val]) => (
-                    <WrBar
-                      key={key}
-                      label={key === "fb_secured" ? "FB garantido" : "FB perdido"}
-                      value={val.win_rate}
-                      n={val.games}
-                      hotBelow={key === "fb_lost" ? 101 : 50}
-                    />
-                  ))}
-                  {Object.keys(data.first_blood_impact || {}).length === 0 && (
-                    <Empty>Sem dados suficientes de first blood ainda.</Empty>
-                  )}
-                </div>
-                <div className="panel">
-                  <div className="section-title">
-                    <span className="eyebrow">Composições × Mapa (grupo completo)</span>
-                    <span className="muted mono" style={{ fontSize: 11, marginLeft: 8 }}>
-                      {data.total_together} partidas analisadas
-                    </span>
-                  </div>
-                  {data.map_agent_combos && data.map_agent_combos.length > 0 ? (
-                    data.map_agent_combos.map((c, i) => (
-                      <motion.div
-                        key={i}
-                        className="duo-row"
-                        style={{ gridTemplateColumns: "80px 1fr 90px" }}
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: i * 0.04 }}
-                      >
-                        <span className="tag">{c.map}</span>
-                        <span className="mono" style={{ fontSize: 12 }}>{c.agent_combo}</span>
-                        <span className={`mono ${c.win_rate >= 50 ? "win" : "loss"}`} style={{ textAlign: "right" }}>
-                          {c.win_rate}%
-                          <span className="muted" style={{ fontSize: 10, display: "block" }}>
-                            {c.games}j <Conf level={c.confidence} n={c.games} />
-                          </span>
-                        </span>
-                      </motion.div>
-                    ))
-                  ) : (
-                    <Empty>Sem composições registradas ainda. O grupo precisa jogar partidas competitivas completas juntos.</Empty>
-                  )}
-                </div>
-              </>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+    </div>
+  );
+}
+
+// ---------- Correlação do stack: abertura, sobreviventes, mapa × composição ----------
+function CorrelationPanel({ members }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    setData(null); setErr("");
+    api.groupCorrelation(members || undefined).then(setData).catch((e) => setErr(e.message));
+  }, [members]);
+
+  const scope = members ? members.map((m) => m.riot_id).join(" + ") : "todos os stacks do grupo";
+  return (
+    <div style={{ marginTop: 28 }}>
+      <div className="section-title">
+        <span className="eyebrow">Como o grupo ganha rounds — {scope}</span>
+      </div>
+      {err && <div className="error-box">{err}</div>}
+      {!data ? <Loader /> : data.stacks_analyzed === 0 ? (
+        <Empty>Ninguém do grupo jogou junto ainda. Os padrões de round aparecem a partir da 1ª partida em stack.</Empty>
+      ) : (
+        <>
+          <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", alignItems: "start" }}>
+            <section className="panel">
+              <div className="flex between" style={{ marginBottom: 8 }}>
+                <span className="eyebrow">Duelo de abertura → round</span>
+                <Conf level={data.confidence} n={data.rounds_analyzed} />
+              </div>
+              <WrBar label="Abrimos o round" value={data.opening_duel.won.win_rate ?? 0} n={data.opening_duel.won.rounds} />
+              <WrBar label="Eles abriram" value={data.opening_duel.lost.win_rate ?? 0} n={data.opening_duel.lost.rounds} />
+              <p className="muted" style={{ fontSize: 13, marginTop: 10 }}>
+                Win rate do round conforme quem fez a primeira kill. A diferença é o
+                quanto o grupo depende de ganhar a entrada.
+              </p>
+            </section>
+            <section className="panel">
+              <div className="flex between" style={{ marginBottom: 8 }}>
+                <span className="eyebrow">Membros vivos no fim → round</span>
+              </div>
+              {data.survivors.map((s) => (
+                <WrBar key={s.alive} label={`${s.alive} vivo${s.alive === 1 ? "" : "s"}`} value={s.win_rate ?? 0} n={s.rounds} />
+              ))}
+              <p className="muted" style={{ fontSize: 13, marginTop: 10 }}>
+                Quantos do stack terminaram vivos. Muitos rounds com 0 vivos e vitória
+                baixa = o grupo troca mal e morre junto.
+              </p>
+            </section>
+          </div>
+          <div className="panel" style={{ marginTop: 16 }}>
+            <div className="flex between" style={{ marginBottom: 8 }}>
+              <span className="eyebrow">Mapa × composição do stack</span>
+              <span className="muted mono" style={{ fontSize: 11 }}>{data.stacks_analyzed} partidas</span>
+            </div>
+            {data.map_agent_combos.length ? data.map_agent_combos.map((c, i) => (
+              <div key={i} className="duo-row" style={{ gridTemplateColumns: "90px 1fr 90px" }}>
+                <span className="tag">{c.map}</span>
+                <span className="mono" style={{ fontSize: 12 }}>{c.agent_combo}</span>
+                <span className={`mono ${c.win_rate >= 50 ? "win" : "loss"}`} style={{ textAlign: "right" }}>
+                  {c.win_rate}%
+                  <span className="muted" style={{ fontSize: 10, display: "block" }}>
+                    {c.games}j <Conf level={c.confidence} n={c.games} />
+                  </span>
+                </span>
+              </div>
+            )) : <Empty>Sem composições registradas ainda.</Empty>}
+          </div>
+        </>
+      )}
     </div>
   );
 }

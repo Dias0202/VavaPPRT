@@ -11,6 +11,12 @@ import Group from "./pages/Group";
 import Weekly from "./pages/Weekly";
 import Goals from "./pages/Goals";
 import Account from "./pages/Account";
+import Pending from "./pages/Pending";
+import Admin from "./pages/Admin";
+import Duo from "./pages/Duo";
+import Match from "./pages/Match";
+import PreQueue from "./pages/PreQueue";
+import ServerBanner from "./components/ServerBanner";
 
 // A transição de página desliza, mas NÃO parte de opacity 0.
 //
@@ -52,7 +58,15 @@ function SkeletonLoader() {
 function Protected({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <SkeletonLoader />;
-  return user ? children : <Navigate to="/login" replace />;
+  if (!user) return <Navigate to="/login" replace />;
+  // Cadastro pendente não vê o grupo — só a tela de espera.
+  if (user.status && user.status !== "approved") return <Pending />;
+  return children;
+}
+
+function AdminOnly({ children }) {
+  const { user } = useAuth();
+  return user?.is_admin ? children : <Navigate to="/" replace />;
 }
 
 function PublicOnly({ children }) {
@@ -64,6 +78,8 @@ function PublicOnly({ children }) {
 export default function App() {
   const location = useLocation();
   return (
+    <>
+    <ServerBanner />
     <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
         <Route path="/login" element={<PublicOnly><PageMotion><Login /></PageMotion></PublicOnly>} />
@@ -82,9 +98,14 @@ export default function App() {
           <Route path="/metas" element={<PageMotion><Goals /></PageMotion>} />
           <Route path="/conta" element={<PageMotion><Account /></PageMotion>} />
           <Route path="/jogador/:riotId/:tagline" element={<PageMotion><Profile /></PageMotion>} />
+          <Route path="/pre-fila" element={<PageMotion><PreQueue /></PageMotion>} />
+          <Route path="/partida/:matchId" element={<PageMotion><Match /></PageMotion>} />
+          <Route path="/dupla/:ra/:ta/:rb/:tb" element={<PageMotion><Duo /></PageMotion>} />
+          <Route path="/admin" element={<AdminOnly><PageMotion><Admin /></PageMotion></AdminOnly>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AnimatePresence>
+    </>
   );
 }

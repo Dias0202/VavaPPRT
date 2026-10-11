@@ -7,6 +7,7 @@ import { MIN_MAP } from "../lib/gates";
 import Heatmap from "./Heatmap";
 import QueuePlan from "./QueuePlan";
 import { Tendencia, Sessoes, Rank, PosPlant, Utilidade, Verdict } from "./Progress";
+import VsLobby from "./VsLobby";
 
 // Percentual que distingue "0%" de "sem amostra" (backfill não tem dado de lado).
 const pct = (v) => (v === null || v === undefined ? "—" : `${v}%`);
@@ -16,7 +17,7 @@ const pct = (v) => (v === null || v === undefined ? "—" : `${v}%`);
 const TAB_GROUPS = [
   ["Agora", [["visao", "Visão"], ["tendencia", "Tendência"], ["rank", "Rank"], ["sessoes", "Sessões"]]],
   ["Round", [["combate", "Combate"], ["economia", "Economia"], ["posplant", "Pós-plant"]]],
-  ["Contexto", [["mapas", "Mapas"], ["agentes", "Agentes"], ["armas", "Armas"], ["utilidade", "Utilidade"], ["heatmap", "Heatmap"]]],
+  ["Contexto", [["lobby", "vs Lobby"], ["mapas", "Mapas"], ["agentes", "Agentes"], ["armas", "Armas"], ["utilidade", "Utilidade"], ["heatmap", "Heatmap"]]],
   ["Ação", [["insights", "Insights"]]],
 ];
 
@@ -54,6 +55,7 @@ export default function PlayerProfile({ riotId, tagline }) {
       transition={{ duration: 0.3 }}
     >
       <Verdict riotId={riotId} tagline={tagline} ov={ov} />
+      <Coverage ov={ov} />
 
       <nav className="tabs" aria-label="Seções do perfil">
         {TAB_GROUPS.map(([group, items]) => (
@@ -85,6 +87,7 @@ export default function PlayerProfile({ riotId, tagline }) {
       {tab === "utilidade" && <Lazy fetcher={() => api.utility(riotId, tagline)} render={(d) => <Utilidade data={d} />} />}
       {tab === "insights" && <Lazy fetcher={() => api.insights(riotId, tagline)} render={(d) => <Insights data={d} />} />}
       {tab === "heatmap" && <Heatmap riotId={riotId} tagline={tagline} />}
+      {tab === "lobby" && <Lazy fetcher={() => api.vsLobby(riotId, tagline)} render={(d) => <VsLobby data={d} />} />}
     </motion.div>
   );
 }
@@ -168,6 +171,22 @@ function Visao({ ov, riotId, tagline }) {
             : <Empty>Sem partidas.</Empty>
         )} />
       </aside>
+    </div>
+  );
+}
+
+// Quanto do histórico já tem rounds/kills. O poller promove o resto sozinho;
+// enquanto não chega a 100%, as métricas profundas falam de uma amostra menor.
+function Coverage({ ov }) {
+  if (!ov.matches || ov.deep_matches >= ov.matches) return null;
+  const pct = Math.round((100 * ov.deep_matches) / ov.matches);
+  return (
+    <div className="coverage" title="Partidas com rounds e kills (completas) sobre o total">
+      <span className="eyebrow">Histórico completo</span>
+      <div className="bar"><span style={{ width: `${pct}%` }} /></div>
+      <span className="mono" style={{ fontSize: 12 }}>
+        {ov.deep_matches}/{ov.matches} <span className="muted">· o resto entra aos poucos, sozinho</span>
+      </span>
     </div>
   );
 }
