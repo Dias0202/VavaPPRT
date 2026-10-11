@@ -139,12 +139,18 @@ e dispara `ingest_player_now` via **BackgroundTasks** (v4 + backfill).
 ## 6. API (rotas principais)
 
 ```
-POST /auth/register · POST /auth/login · GET /me            (JWT)
-GET  /players · GET /roster · POST /roster                  (adicionar pessoa)
-GET  /players/{riot}/{tag}/overview|maps|agents|weapons|insights|recent|heatmap
-GET  /leaderboard
-GET  /group/squads · POST /group/detail · GET /group/duo/... · GET /group/synergy
+POST /auth/register (nasce pending, exceto ADMIN_RIOT_ID) · POST /auth/login · GET /me
+PUT  /me/password
+GET  /players · GET /roster · POST /roster (rastreado, com apelido) · DELETE /roster/... (admin)
+GET  /players/{riot}/{tag}/overview|maps|agents|weapons|insights|recent|heatmap|vs-lobby|...
+GET  /leaderboard · GET /matches/{id}
+GET  /group/squads · POST /group/detail · GET /group/duo/... · GET /group/synergy-matrix
+GET|POST /group/correlation · POST /group/pre-queue
+GET  /admin/users · POST /admin/users/{id}/approve|reject|admin
+GET  /status/ingest · GET /health
 ```
+Rotas de dados exigem usuário **aprovado** (`current_user`); só `/me` aceita
+pendente (`any_user`). Lista completa em [API_ROUTES.md](API_ROUTES.md).
 Auth por `Authorization: Bearer <jwt>`. CORS restrito às origens do frontend.
 
 ## 7. Frontend (`frontend/src/`)
@@ -160,17 +166,28 @@ Auth por `Authorization: Bearer <jwt>`. CORS restrito às origens do frontend.
 
 ## 8. Rate limit & resiliência
 
-- Cliente serializa chamadas com intervalo mínimo (`_MIN_INTERVAL ≈ 2,1s`).
+- Cliente serializa chamadas com intervalo mínimo (`_MIN_INTERVAL ≈ 2,1s`),
+  com lock: downloads de cadastro rodam em threads de background.
+- Orçamento por execução do poller: `v4/matches` para todos; `mmr` +
+  `mmr-history` só com partida nova ou a cada 6 h; deep backfill em rodízio
+  até `DEEP_PER_RUN`, parando no primeiro 429.
+- Toda execução vai para `ingest_runs` (chamadas, 429, erros); estado por
+  jogador em `ingest_state`. O poller sai com erro sem `DATABASE_URL` ou se
+  nenhum jogador pôde ser ingerido.
+- Postgres atrás do pooler do Supabase: pool de conexões (`ThreadedConnectionPool`)
+  e escrita em lote (`execute_values`).
 - `_get` trata 429/404/erro de rede sem derrubar o processo.
 - Ingestão idempotente: re-rodar o poller não duplica nem corrompe.
 - Backend serve do banco → indiferente a falhas/lentidão da Henrik no runtime.
 
 ## 9. Deploy
 
-- **Backend:** Render Web Service, root `backend`, start `uvicorn app.main:app`.
-- **Frontend:** Vercel, root `frontend`, build Vite.
-- **Banco:** Supabase Postgres (`DATABASE_URL`).
-- **Poller:** GitHub Actions `poll.yml` (cron `*/10`), `backfill.yml` (manual).
+- **Backend:** Render Web Service (oregon), root `backend`, start `uvicorn app.main:app`.
+- **Frontend:** GitHub Pages via `pages.yml`, só depois do CI verde.
+- **Banco:** Supabase Postgres, papel `vavapprt_app`, schema privado `vavapprt`.
+- **Poller:** `poll.yml` disparado a cada 15 min pelo `pg_cron` do Supabase
+  (`workflow_dispatch`), cron do GitHub como reserva, keepalive no próprio run.
+- **CI:** `ci.yml` — pytest em SQLite e Postgres + build do frontend.
 - Segredos via env/secrets; `.env` nunca commitado. Detalhes em
   [DEPLOY_WEB.md](DEPLOY_WEB.md).
 
@@ -188,15 +205,15 @@ Auth por `Authorization: Bearer <jwt>`. CORS restrito às origens do frontend.
 
 ## 11. Testes & verificação
 
-Validação ao vivo contra conta real (YFV#4258, NA): ingestão v4, backfill,
-agregações, grupos e endpoints conferidos end-to-end. Suporte a SQLite local
-permite rodar tudo sem Postgres no dev.
+`backend/tests` (pytest, 32 testes) roda a mesma suíte em SQLite e em Postgres
+(schema descartável por sessão). A HenrikDev é falsa: 4 partidas v4 reais
+**anonimizadas** em `tests/fixtures`. Cobre métricas (placar oficial = derivado,
+um first kill por round), aprovação e permissões, todas as rotas, ingestão
+idempotente, orçamento de cota, rate limit e o religamento de quem entra no
+grupo depois de já ter jogado com ele.
 
 ## 12. Trabalho futuro
 
-- **F5**: backfill profundo por `match_id` (rounds/kills retroativos) — caro
-  (1 req/partida), job lento sob demanda.
 - Calibrar transform do heatmap por mapa e janelas de trade/economia.
-- Verificar caminho `bytea`/`SERIAL` na primeira execução real no Postgres.
 - Migrações de schema (hoje `CREATE TABLE IF NOT EXISTS`; mudanças de coluna
   exigem recriar — adotar Alembic se o schema evoluir muito).

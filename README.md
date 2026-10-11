@@ -24,12 +24,13 @@ a inviabilidade da API oficial da Riot para projetos pessoais — ver
    Navegador
        │
        ▼
-  Frontend React (Vercel)  ──►  Backend FastAPI (Render)  ──►  Postgres (Supabase)
-   SPA, tema HUD tático        serve SÓ do banco                     ▲
-                                                                     │ grava
-                                              Poller (GitHub Actions cron ~10min)
-                                                                     │
-                                                                     ▼
+  Frontend React (GitHub Pages) ──► Backend FastAPI (Render) ──► Postgres (Supabase)
+   SPA "Telemetria"                 serve SÓ do banco                 ▲      │
+                                                                      │      │ pg_cron 15 min
+                                                         grava        │      ▼
+                                              Poller (GitHub Actions, workflow_dispatch)
+                                                                      │
+                                                                      ▼
                                                        API HenrikDev (v4, 30 req/min)
 ```
 
@@ -40,15 +41,28 @@ limit controlado.
 
 | Camada | Tecnologia | Onde roda |
 |---|---|---|
-| Frontend | React + Vite (SPA) | Vercel |
-| Backend | FastAPI (Python 3.12) | Render (free) |
-| Banco | PostgreSQL (fallback SQLite no dev) | Supabase (free) |
-| Ingestão | Script Python via cron | GitHub Actions |
+| Frontend | React + Vite (SPA) | GitHub Pages (publica com CI verde) |
+| Backend | FastAPI (Python 3.12) | Render (free, oregon) |
+| Banco | PostgreSQL (fallback SQLite no dev) | Supabase (free, us-west-2) |
+| Ingestão | Script Python | GitHub Actions, disparado pelo `pg_cron` do Supabase |
+| Testes | pytest em SQLite **e** Postgres | GitHub Actions (CI) |
 
 ## Funcionalidades
 
-- **Login por usuário** + **adicionar pessoas ao grupo** (rastreadas, sem login):
-  ao adicionar, os dados são baixados e os grupos se formam automaticamente.
+- **Grupo fechado**: cadastro novo fica pendente até o admin aprovar
+  (`ADMIN_RIOT_ID` define o admin). Membros adicionam pessoas **rastreadas**
+  (sem login, com apelido); só o admin remove.
+- **Pré-fila**: marque quem está on → mapas para aceitar/evitar e escalação de
+  agentes sem repetir agente nem função, com a base de evidência explícita
+  (stack exato > duplas > individual).
+- **Duplas**: juntos vs separados, **quem carrega**, **quem vinga quem** (trade
+  mútuo em 4 s), forma, mapas e combos — mais a **matriz de sinergia** N×N.
+- **Partida aberta**: placar dos 10, timeline de rounds com economia e quem
+  abriu o round, heatmap da partida.
+- **Você vs lobby / vs seu elo**: posição média no placar, % de top 1 do time,
+  ACS/K/D/ADR/HS% contra o próprio time, os adversários e a média do seu tier.
+- **Correlação do stack**: win rate do round quando o grupo abre vs quando
+  toma a abertura, e por quantos terminam vivos.
 - **Perfil com abas**: Visão · Combate · Economia · Mapas · Agentes · Armas ·
   Insights · Heatmap.
 - **Combate**: K/D, ACS, ADR, HS%, **KAST**, multikills.
@@ -68,6 +82,8 @@ limit controlado.
 - **Metas de treino**: as lacunas do motor de insights viram número com
   acompanhamento.
 - **Opt-out**: apagar conta e todos os dados pessoais associados.
+- **Honestidade sobre o dado**: chip "dados há X min" (fica âmbar se o poller
+  parar), barra de histórico completo, faixa "acordando o servidor".
 
 ## Estrutura do repositório
 
@@ -80,14 +96,18 @@ backend/                 FastAPI — serve só do banco
     valorant_api.py        cliente HenrikDev v4 (síncrono, com throttle)
     metrics.py             motor de métricas (clutch/trade/KAST/lado) sobre v4
     analytics.py           agregações + grupos + gating + insights
-    ingest.py              ingestão v4 + backfill (lifetime)
-    poll.py                entrypoint do cron
-  requirements.txt · Procfile · .env.example
+    squad.py               stacks, correlação por round, dupla, pré-fila
+    matchview.py           detalhe de partida, você vs lobby/elo
+    progress.py            tendência, sessões, RR, metas, semana
+    ingest.py              ingestão v4 + backfill + deep backfill em rodízio
+    poll.py                entrypoint do poller
+  tests/                   pytest (fixtures v4 anonimizadas)
+  requirements.txt · requirements-dev.txt · .env.example
 frontend/                React SPA (tema "HUD tático")
   src/{pages,components,lib}
   package.json · .env.example · dev.ps1
-.github/workflows/       poll.yml (cron 10min) · backfill.yml (manual)
-docs/                    PDD · SDD · DEPLOY_WEB · PLANO_ANALYTICS · PESQUISA
+.github/workflows/       ci.yml · pages.yml · poll.yml · backfill.yml · deep-backfill.yml
+docs/                    PDD · SDD · DEPLOY_WEB · PLANO_ANALYTICS · PLANO_FINALIZACAO
 ```
 
 ## Rodar localmente
@@ -135,8 +155,8 @@ só rodar de novo. `GET /players/.../coverage` mostra quanto já tem lastro.
 
 ## Deploy
 
-Passo a passo (Supabase + Render + Vercel + GitHub Actions, 100% grátis) em
-**[docs/DEPLOY_WEB.md](docs/DEPLOY_WEB.md)**.
+Passo a passo (Supabase + Render + GitHub Pages + GitHub Actions, 100% grátis)
+e runbook de "o site não carrega" em **[docs/DEPLOY_WEB.md](docs/DEPLOY_WEB.md)**.
 
 ## Privacidade
 

@@ -2,7 +2,8 @@
 
 Base URL (local): `http://localhost:8000`
 
-All routes except `/`, `/health`, `/auth/*` require `Authorization: Bearer <token>`.
+All routes except `/`, `/health`, `/auth/*` require `Authorization: Bearer <token>`
+from an **approved** user (pending registrations get 403 everywhere except `GET /me`).
 
 ---
 
@@ -100,9 +101,8 @@ their puuid nulled.
 | GET | `/group/synergy` | — | Duo win rates for all roster pairs |
 | GET | `/group/squads` | — | All unique group combinations that played together |
 | POST | `/group/detail` | `{members: [{riot_id, tagline}]}` | Deep analysis of a specific group |
-| GET | `/group/duo/{ra}/{ta}/{rb}/{tb}` | — | Duo detail (KD, maps, agent combos, lift) |
+| GET | `/group/duo/{ra}/{ta}/{rb}/{tb}` | — | Duo detail (see v3 below) |
 | GET | `/group/correlation` | — | Map × agent composition win rates for the full roster |
-| GET | `/group/round-analysis` | — | Survivor count vs match win rate correlation |
 
 ---
 
@@ -174,3 +174,28 @@ their puuid nulled.
   }
 ]
 ```
+
+
+---
+
+## v3 — approval, group depth, status
+
+| Method | Path | Body / query | Description |
+|--------|------|--------------|-------------|
+| PUT | `/me/password` | `{current, new}` | Change own password |
+| POST | `/roster` | `{riot_id, tagline, region?, label?}` | Add tracked player (any member); `label` = nickname |
+| DELETE | `/roster/{riot_id}/{tagline}` | — | Remove tracked player (**admin only**) |
+| GET | `/admin/users` | `?status=pending` | Users with login (admin) |
+| POST | `/admin/users/{id}/approve` | — | Approve + start history download (admin) |
+| POST | `/admin/users/{id}/reject` | — | Delete the registration and its data (admin) |
+| POST | `/admin/users/{id}/admin` | `?value=true` | Grant/revoke admin (admin) |
+| GET | `/status/ingest` | — | Last poller runs + per-player freshness and coverage |
+| GET | `/group/synergy-matrix` | — | N×N duo win rate (same team) |
+| GET | `/group/correlation` | — | All stacks: map × comp, opening duel → round WR, survivors → round WR |
+| POST | `/group/correlation` | `{members: [...]}` | Same, for an exact stack |
+| GET | `/group/duo/{ra}/{ta}/{rb}/{tb}` | — | Together vs apart, carry, mutual trades, maps, combos, form |
+| POST | `/group/pre-queue` | `{members: [...]}` (1–5) | Per map: verdict, evidence basis, agent lineup |
+| GET | `/matches/{match_id}` | — | Scoreboard, round timeline (economy, opening), kill points. 404 if no group member played |
+| GET | `/players/{riot_id}/{tagline}/vs-lobby` | — | Placement, team/match MVP %, you vs teammates/enemies, you vs your tier |
+
+`/group/round-analysis` was folded into `/group/correlation` (`survivors`).

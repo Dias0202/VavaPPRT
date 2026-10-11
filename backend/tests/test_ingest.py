@@ -75,3 +75,16 @@ def test_falha_de_api_vira_erro_registrado(client, henrik, monkeypatch):
     run = db.recent_ingest_runs(1)[0]
     assert run["ok"] == 0 and run["errors"]
     assert db.get_ingest_state(ADMIN_PUUID)["last_error"].startswith("v4")
+
+
+def test_backfill_espera_rate_limit_e_tenta_de_novo(client, henrik, monkeypatch):
+    register(client, "admin", "Admin", "0001")
+    calls = []
+
+    def lifetime(name, tag, region=None, page=1, size=20):
+        calls.append(page)
+        return {"error": "rate_limit", "status": 429} if len(calls) == 1 else {"data": []}
+
+    monkeypatch.setattr("app.valorant_api.fetch_lifetime", lifetime)
+    ingest.backfill_user(db.get_roster()[0], pages=1)
+    assert calls == [1, 1]

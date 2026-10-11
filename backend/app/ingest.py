@@ -183,8 +183,16 @@ def backfill_user(user, pages=3, size=20):
     added = 0
     for page in range(1, pages + 1):
         data = api.fetch_lifetime(name, tag, region=region, page=page, size=size)
+        if isinstance(data, dict) and data.get("status") == 429:
+            # Cadastros simultâneos dividem a cota: espera a janela e tenta 1x,
+            # senão o histórico do jogador fica pela metade sem ninguém saber.
+            time.sleep(30)
+            data = api.fetch_lifetime(name, tag, region=region, page=page, size=size)
         if isinstance(data, dict) and data.get("error"):
             logger.warning("Lifetime %s#%s p%d: %s", name, tag, page, data.get("error"))
+            if puuid:
+                db.update_ingest_state(puuid, last_error=f"lifetime p{page}: {data.get('error')}",
+                                       last_error_raw=int(time.time()))
             break
         items = data.get("data") or []
         if not items:
