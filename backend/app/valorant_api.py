@@ -7,7 +7,9 @@ NÃO usam este módulo — elas leem do banco.
 Rate limit (Basic Key): 30 req/min. O poller serializa as chamadas e respeita
 um intervalo mínimo entre requisições.
 """
+import threading
 import time
+
 import requests
 
 from . import config
@@ -28,11 +30,18 @@ def reset_stats():
     stats["rate_limited"] = 0
 
 
+# A API baixa jogadores novos em threads de background (um por cadastro). Sem
+# lock, duas threads leem o mesmo _last_call e disparam juntas: 6 cadastros em
+# sequência estouravam os 30 req/min e viravam 429.
+_throttle_lock = threading.Lock()
+
+
 def _throttle():
-    elapsed = time.monotonic() - _last_call[0]
-    if elapsed < _MIN_INTERVAL:
-        time.sleep(_MIN_INTERVAL - elapsed)
-    _last_call[0] = time.monotonic()
+    with _throttle_lock:
+        elapsed = time.monotonic() - _last_call[0]
+        if elapsed < _MIN_INTERVAL:
+            time.sleep(_MIN_INTERVAL - elapsed)
+        _last_call[0] = time.monotonic()
 
 
 def _get(url, throttle=True):
