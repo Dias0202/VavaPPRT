@@ -159,6 +159,10 @@ class GeminiProvider:
             "safetySettings": GEMINI_SAFETY,
             "generationConfig": {"temperature": temperature, "maxOutputTokens": 2048},
         }
+        if "flash" in self.model:
+            # O 2.5 Flash "pensa" antes de cada passo por padrão: segundos a mais
+            # por chamada, e o loop de tools faz várias. Zoeira não precisa disso.
+            body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
         if tools:
             body["tools"] = gemini_tools(tools)
         try:
@@ -235,13 +239,22 @@ def openai_messages(system, messages):
 
 
 class OpenAICompatProvider:
+    # O Groq reserva o max_tokens inteiro na cota por minuto (8000 TPM no free
+    # tier) a cada chamada: com 2048, só cabiam ~2 passos do loop por minuto.
+    # Resposta do X9 é curta (voz: 3 frases; texto: ~12 linhas).
+    MAX_TOKENS = 800
+
     def __init__(self, api_key, model, url=_GROQ_URL, name="groq", client=None, timeout=40):
         self.api_key, self.model, self.url, self.name = api_key, model, url, name
         self.client = client or httpx.AsyncClient(timeout=timeout)
 
     async def chat(self, system, messages, tools=None, temperature=0.9):
         body = {"model": self.model, "messages": openai_messages(system, messages),
-                "temperature": temperature, "max_tokens": 2048}
+                "temperature": temperature, "max_tokens": self.MAX_TOKENS}
+        if self.model.startswith("openai/gpt-oss"):
+            # Raciocínio "medium" (padrão) gasta tokens de saída — tempo e cota de
+            # TPM do free tier — em toda chamada do loop de tools.
+            body["reasoning_effort"] = "low"
         if tools:
             body["tools"] = openai_tools(tools)
             body["tool_choice"] = "auto"
@@ -269,28 +282,40 @@ class OpenAICompatProvider:
                            provider=self.name)
 
 
-def GroqProvider(api_key, model, client=None, timeout=40):
-    return OpenAICompatProvider(api_key, model, client=client, timeout=timeout)
+def GroqProvider(api_key, model, client=None, timeout=40, name="groq"):
+    return OpenAICompatProvider(api_key, model, name=name, client=client, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
 # Fallback
 # ---------------------------------------------------------------------------
 class FallbackProvider:
-    """Tenta cada provedor em ordem. Quem falha fica de castigo por `cooldown_s`
-    (não adianta martelar o Gemini depois de um 429 de cota)."""
+    """Tenta cada provedor em ordem. Quem falha fica de castigo por `cooldown_s`,
+    dobrando a cada falha seguida até `max_cooldown_s` (cota diária estourada
+    não volta em 1 minuto, e cada tentativa custa uma ida e volta)."""
 
     name = "fallback"
 
     MAX_WAIT_S = 20        # limite por minuto (TPM) pede espera curta: vale aguardar
     MAX_TOTAL_WAIT_S = 45  # mas a resposta não pode demorar para sempre
 
-    def __init__(self, providers, cooldown_s=60, clock=time.monotonic, sleep=asyncio.sleep):
+    def __init__(self, providers, cooldown_s=60, clock=time.monotonic, sleep=asyncio.sleep,
+                 max_cooldown_s=1800):
         if not providers:
             raise ValueError("Nenhum provedor de LLM configurado.")
         self.providers, self.cooldown_s, self.clock = providers, cooldown_s, clock
+        self.max_cooldown_s = max_cooldown_s
         self.sleep = sleep
         self._bench = {}
+        self._strikes = {}
+
+    def _punish(self, p):
+        n = self._strikes[p.name] = self._strikes.get(p.name, 0) + 1
+        self._bench[p.name] = self.clock() + min(self.cooldown_s * 2 ** (n - 1), self.max_cooldown_s)
+
+    def _pardon(self, p):
+        self._bench.pop(p.name, None)
+        self._strikes.pop(p.name, None)
 
     async def chat(self, system, messages, tools=None, temperature=0.9):
         now = self.clock()
@@ -299,11 +324,17 @@ class FallbackProvider:
         errors, waits = [], []
         for p in order:
             try:
-                return await p.chat(system, messages, tools, temperature)
+                resp = await p.chat(system, messages, tools, temperature)
+                self._pardon(p)
+                return resp
             except LLMError as e:
                 logger.warning("LLM %s falhou: %s", p.name, str(e)[:200])
                 errors.append(f"{p.name}: {e}")
-                self._bench[p.name] = self.clock() + self.cooldown_s
+                if e.retry_after is not None and e.retry_after <= self.MAX_WAIT_S:
+                    # limite por minuto: castigo curto, sem escalar
+                    self._bench[p.name] = self.clock() + self.cooldown_s
+                else:
+                    self._punish(p)
                 if e.retry_after is not None and e.retry_after <= self.MAX_WAIT_S:
                     waits.append((e.retry_after, p))
         waited = 0.0
@@ -321,7 +352,7 @@ class FallbackProvider:
             waits = []
             try:
                 resp = await p.chat(system, messages, tools, temperature)
-                self._bench.pop(p.name, None)
+                self._pardon(p)
                 return resp
             except LLMError as e:
                 errors.append(f"{p.name} (de novo): {e}")

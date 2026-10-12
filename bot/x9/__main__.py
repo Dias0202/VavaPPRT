@@ -14,6 +14,9 @@ def build_provider():
         providers.append(GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_MODEL))
     if config.GROQ_API_KEY:
         providers.append(GroqProvider(config.GROQ_API_KEY, config.GROQ_MODEL))
+        if config.GROQ_FALLBACK_MODEL and config.GROQ_FALLBACK_MODEL != config.GROQ_MODEL:
+            providers.append(GroqProvider(config.GROQ_API_KEY, config.GROQ_FALLBACK_MODEL,
+                                          name=f"groq/{config.GROQ_FALLBACK_MODEL.split('/')[-1]}"))
     return FallbackProvider(providers)
 
 

@@ -26,6 +26,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+# Cota por minuto (TPM) do free tier é por modelo: quando o principal estoura,
+# o reserva responde na hora em vez de o bot esperar o minuto virar. Vazio desliga.
+GROQ_FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b").strip()
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small").strip()
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto").strip()

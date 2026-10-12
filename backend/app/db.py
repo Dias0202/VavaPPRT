@@ -52,7 +52,12 @@ class _PooledConn:
         broken = bool(raw.closed)
         if not broken:
             try:
-                raw.rollback()
+                # Leitura em autocommit não abriu transação: rollback seria só
+                # mais uma ida e volta até o pooler.
+                if raw.info.transaction_status != psycopg2.extensions.TRANSACTION_STATUS_IDLE:
+                    raw.rollback()
+                if raw.autocommit:
+                    raw.autocommit = False
             except Exception:
                 broken = True
         if broken:
@@ -123,6 +128,14 @@ def _is_sqlite(conn):
 
 def _ph(conn):
     return "?" if _is_sqlite(conn) else "%s"
+
+
+def _read_only(conn):
+    """Leitura avulsa em autocommit: sem o BEGIN implícito do psycopg2 (e sem o
+    rollback no close), a query custa 1 ida e volta ao pooler em vez de 3."""
+    if isinstance(conn, _PooledConn):
+        conn._raw.autocommit = True
+    return conn
 
 
 def _dict_cursor(conn):
@@ -645,7 +658,7 @@ def riot_id_exists(riot_id, tagline):
 
 
 def get_all_users():
-    conn = get_connection()
+    conn = _read_only(get_connection())
     try:
         cur = _dict_cursor(conn)
         cur.execute("SELECT id, username, riot_id, tagline, region, puuid, consent, status "
@@ -798,7 +811,7 @@ def save_summary_match(meta, mp_row, derived_row):
 # Partidas — leitura (analytics)
 # ---------------------------------------------------------------------------
 def _query(sql, params=()):
-    conn = get_connection()
+    conn = _read_only(get_connection())
     try:
         cur = _dict_cursor(conn)
         sql2 = sql if _is_sqlite(conn) else sql.replace("?", "%s")
@@ -911,7 +924,7 @@ def spatial_events_for_puuid(puuid):
 # ---------------------------------------------------------------------------
 def get_raw_match(match_id):
     """Returns decompressed match dict, or None if no raw stored."""
-    conn = get_connection()
+    conn = _read_only(get_connection())
     try:
         cur = conn.cursor()
         cur.execute(f"SELECT raw_gz FROM matches WHERE match_id = {_ph(conn)}", (match_id,))
@@ -1248,6 +1261,28 @@ def get_match_row(match_id):
 
 def match_players_for_match(match_id):
     return _query("SELECT * FROM match_players WHERE match_id = ?", (match_id,))
+
+
+def match_bundles(match_ids):
+    """{match_id: (linha de get_match_row, match_players, raw|None)} de várias
+    partidas em 2 queries, em vez de 3 por partida (o banco fica longe)."""
+    ids = list(match_ids)
+    if not ids:
+        return {}
+    marks = ",".join("?" for _ in ids)
+    rows = _query("SELECT match_id, map, mode, queue, season, started_at, started_raw, "
+                  "rounds, region, raw_gz FROM matches "
+                  f"WHERE match_id IN ({marks})", tuple(ids))
+    players = {}
+    for r in _query(f"SELECT * FROM match_players WHERE match_id IN ({marks})", tuple(ids)):
+        players.setdefault(r["match_id"], []).append(r)
+    out = {}
+    for r in rows:
+        gz = r.pop("raw_gz", None)
+        r["has_raw"] = bool(gz)
+        raw = json.loads(gzip.decompress(bytes(gz))) if gz else None
+        out[r["match_id"]] = (r, players.get(r["match_id"], []), raw)
+    return out
 
 
 def kills_for_matches(match_ids):

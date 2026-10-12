@@ -273,3 +273,33 @@ async def test_tool_use_failed_tenta_de_novo():
 
     fb = FallbackProvider([GroqProvider("g", "m", client=_client(handler))], sleep=no_sleep)
     assert (await fb.chat("s", [])).text == "ok" and len(n) == 2
+
+
+async def test_sem_raciocinio_lento():
+    seen = []
+
+    def handler(req):
+        seen.append(json.loads(req.content))
+        if "googleapis" in str(req.url):
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": "oi"}]}}]})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "oi"}}]})
+
+    await GeminiProvider("k", "gemini-2.5-flash", client=_client(handler)).chat("s", [])
+    await GroqProvider("g", "openai/gpt-oss-120b", client=_client(handler)).chat("s", [])
+    assert seen[0]["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+    assert seen[1]["reasoning_effort"] == "low"
+
+
+async def test_castigo_dobra_enquanto_continua_falhando():
+    t = [0.0]
+    g = Scripted("gemini", [LLMError("cota"), LLMError("cota"), LLMResponse(text="voltei")])
+    q = Scripted("groq", [LLMResponse(text="q")] * 5)
+    fb = FallbackProvider([g, q], cooldown_s=60, clock=lambda: t[0])
+    await fb.chat("s", [])           # gemini falha: castigo de 60 s
+    t[0] = 61
+    await fb.chat("s", [])           # falha de novo: castigo de 120 s
+    t[0] = 61 + 100
+    await fb.chat("s", [])
+    assert len(g.calls) == 2         # ainda de castigo
+    t[0] = 61 + 121
+    assert (await fb.chat("s", [])).text == "voltei"

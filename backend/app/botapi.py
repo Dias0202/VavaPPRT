@@ -375,13 +375,16 @@ def _friend_line(r, rounds):
             "hs_pct": round(100 * (r.get("headshots") or 0) / shots, 1) if shots else 0.0}
 
 
-def _match_brief(ctx, mid):
-    row = db.get_match_row(mid) or {}
-    mps = db.match_players_for_match(mid)
+def _match_brief(ctx, mid, bundle=None):
+    if bundle:
+        row, mps, raw = bundle
+    else:
+        row = db.get_match_row(mid) or {}
+        mps = db.match_players_for_match(mid)
+        raw = db.get_raw_match(mid) if row.get("has_raw") else None
     friends = [r for r in mps if r["puuid"] in ctx.friends]
     rounds = row.get("rounds") or 1
     placar = None
-    raw = db.get_raw_match(mid) if row.get("has_raw") else None
     if raw:
         mv = _Match(raw, ctx)
         o, t = mv.final_score()
@@ -402,7 +405,9 @@ def partidas_recentes(ctx, jogador=None, limite=5):
     except (TypeError, ValueError):
         limite = 5
     puuids = [ctx.resolve(jogador)] if jogador else sorted(ctx.friends)
-    return {"partidas": [_match_brief(ctx, mid) for mid in db.group_matches(puuids, limite)]}
+    mids = db.group_matches(puuids, limite)
+    bundles = db.match_bundles(mids)
+    return {"partidas": [_match_brief(ctx, mid, bundles.get(mid)) for mid in mids]}
 
 
 def resumo_partida(ctx, partida=None, jogador=None):

@@ -235,6 +235,7 @@ GEMINI_API_KEY=           # aistudio.google.com
 GEMINI_MODEL=gemini-2.5-flash
 GROQ_API_KEY=             # console.groq.com (fallback)
 GROQ_MODEL=openai/gpt-oss-120b
+GROQ_FALLBACK_MODEL=openai/gpt-oss-20b  # cota por minuto separada; vazio desliga
 WHISPER_MODEL=small
 WHISPER_DEVICE=auto       # auto | cpu | cuda (cai para CPU sozinho se faltar DLL do CUDA)
 TTS_ENGINE=auto           # auto (edge → piper) | edge | piper

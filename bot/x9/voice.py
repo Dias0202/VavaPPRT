@@ -66,18 +66,28 @@ class UtteranceSink(voice_recv.AudioSink):
 
 
 class VoiceSession:
+    """Dois estágios: o Whisper transcreve todo mundo sem parar e só as falas com
+    "X9" vão para a fila de respostas. Antes, o mesmo worker transcrevia E
+    esperava o LLM, então durante uma resposta as falas se acumulavam, a fila
+    enchia e até o "X9, …" seguinte era descartado."""
+
+    ACK_TEXT = "Deixa eu ver."
+
     def __init__(self, vc, brain, transcriber, text_channel, backend, speaker):
         self.vc, self.brain, self.transcriber = vc, brain, transcriber
         self.text_channel, self.backend, self.speaker = text_channel, backend, speaker
         self.sink = UtteranceSink()
         self._speak_lock = asyncio.Lock()
-        self._queue = asyncio.Queue(maxsize=8)
+        self._heard = asyncio.Queue(maxsize=32)
+        self._asked = asyncio.Queue(maxsize=4)
+        self._ack_pcm = None
         self._tasks = []
 
     def start(self):
         self.vc.listen(self.sink)
         loop = asyncio.get_running_loop()
-        self._tasks = [loop.create_task(self._collect()), loop.create_task(self._work())]
+        self._tasks = [loop.create_task(self._collect()), loop.create_task(self._transcribe()),
+                       loop.create_task(self._answer())]
 
     async def stop(self):
         for t in self._tasks:
@@ -89,34 +99,61 @@ class VoiceSession:
     def connected(self):
         return self.vc.is_connected()
 
+    @staticmethod
+    def _put(queue, item, what):
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            # Fala velha perde para a nova: a conversa já andou.
+            queue.get_nowait()
+            queue.put_nowait(item)
+            logger.warning("Fila de %s cheia; descartei a mais antiga.", what)
+
     async def _collect(self):
         while True:
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
             for member, pcm in self.sink.pop_finished():
-                try:
-                    self._queue.put_nowait((member, pcm))
-                except asyncio.QueueFull:
-                    logger.warning("Fila de fala cheia; descartando fala de %s", member)
+                self._put(self._heard, (member, pcm), "fala")
 
-    async def _work(self):
+    async def _transcribe(self):
         while True:
-            member, pcm = await self._queue.get()
+            member, pcm = await self._heard.get()
             try:
-                await self._handle(member, pcm)
+                text = await asyncio.to_thread(self.transcriber.transcribe,
+                                               audio.discord_to_whisper(pcm))
             except Exception:
-                logger.exception("Falha ao processar fala de %s", member)
+                logger.exception("Falha ao transcrever fala de %s", member)
+                continue
+            if not text:
+                continue
+            question = wake.strip_wake(text)
+            logger.info("🎙️ %s: %s%s", member.display_name, text, "" if question is None else "  [X9]")
+            if question is not None:
+                self._put(self._asked, (member, question), "perguntas")
 
-    async def _handle(self, member, pcm):
-        text = await asyncio.to_thread(self.transcriber.transcribe, audio.discord_to_whisper(pcm))
-        if not text:
-            return
-        question = wake.strip_wake(text)
-        logger.info("🎙️ %s: %s%s", member.display_name, text, "" if question is None else "  [X9]")
-        if question is None:
-            return
+    async def _answer(self):
+        while True:
+            member, question = await self._asked.get()
+            try:
+                await self._handle(member, question)
+            except Exception:
+                logger.exception("Falha ao responder %s", member)
+
+    async def _ack(self):
+        """Resposta imediata enquanto o LLM pensa (o áudio é sintetizado uma vez só)."""
+        try:
+            if self._ack_pcm is None:
+                self._ack_pcm = await self.speaker.synthesize(self.ACK_TEXT)
+            await self.play(self._ack_pcm)
+        except Exception as e:
+            logger.warning("Não consegui tocar o aviso: %s", e)
+
+    async def _handle(self, member, question):
         if not question:
             await self.say("Fala, tô ouvindo.")
             return
+        t0 = time.monotonic()
+        ack = asyncio.create_task(self._ack())
         label = await asyncio.to_thread(self.backend.botapi.linked_label, member.id)
         try:
             reply = await self.brain.answer(f"voice:{self.vc.channel.id}", label or member.display_name,
@@ -124,19 +161,25 @@ class VoiceSession:
                                             speaker_linked=bool(label), voice=True)
         except BrainUnavailable:
             reply = UNAVAILABLE_REPLY
+        logger.info("X9 respondeu %s em %.1fs", member.display_name, time.monotonic() - t0)
         if self.text_channel:
             try:
                 await self.text_channel.send(f"🎙️ **{member.display_name}:** {question}\n"
                                              f"🕵️ **X9:** {reply}"[:1990])
             except discord.HTTPException:
                 pass
+        await ack
         await self.say(reply)
 
     async def say(self, text):
         """Fala na call (uma frase por vez; não se atropela)."""
         if not self.connected():
             return False
-        pcm = await self.speaker.synthesize(text)
+        return await self.play(await self.speaker.synthesize(text))
+
+    async def play(self, pcm):
+        if not self.connected():
+            return False
         async with self._speak_lock:
             done = asyncio.Event()
             loop = asyncio.get_running_loop()
