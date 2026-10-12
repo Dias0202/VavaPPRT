@@ -60,6 +60,9 @@ def setup_logging():
     fh = RotatingFileHandler(logs / "x9.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8")
     fh.setFormatter(fmt)
     root.addHandler(fh)
+    # O fork do voice-recv loga 1 linha/s de RTCP "inesperado" durante a call.
+    logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+    logging.getLogger("discord.ext.voice_recv.gateway").setLevel(logging.WARNING)
 
 
 def main(argv=None):
