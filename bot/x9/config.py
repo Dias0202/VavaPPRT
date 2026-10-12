@@ -22,7 +22,7 @@ ANNOUNCE_CHANNEL_ID = _int("ANNOUNCE_CHANNEL_ID")    # canal do placar
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small").strip()
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto").strip()

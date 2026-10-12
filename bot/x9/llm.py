@@ -12,6 +12,7 @@ meio de uma conversa (Gemini estourou a cota) não perde o histórico.
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -24,9 +25,31 @@ MAX_TOOL_RESULT_CHARS = 8000
 
 
 class LLMError(Exception):
-    def __init__(self, msg, retriable=True):
+    def __init__(self, msg, retriable=True, retry_after=None):
         super().__init__(msg)
         self.retriable = retriable
+        self.retry_after = retry_after  # segundos que o provedor pediu para esperar
+
+
+_RETRY_PATTERNS = (re.compile(r"try again in ([\d.]+)\s*(ms|s)(?![a-z])", re.I),
+                   re.compile(r'"retryDelay":\s*"([\d.]+)(s)"'))
+
+
+def _retry_after(resp):
+    """Quanto o 429 pediu para esperar: header Retry-After, texto do Groq
+    ("try again in 8.2s") ou RetryInfo do Gemini ("retryDelay": "8s")."""
+    h = resp.headers.get("retry-after")
+    try:
+        if h:
+            return float(h)
+    except ValueError:
+        pass
+    for pat in _RETRY_PATTERNS:
+        m = pat.search(resp.text or "")
+        if m:
+            v = float(m.group(1))
+            return v / 1000 if m.group(2).lower() == "ms" else v
+    return None
 
 
 @dataclass
@@ -144,7 +167,8 @@ class GeminiProvider:
         except httpx.HTTPError as e:
             raise LLMError(f"gemini rede: {e}") from e
         if r.status_code == 429 or r.status_code >= 500:
-            raise LLMError(f"gemini HTTP {r.status_code}: {r.text[:200]}")
+            raise LLMError(f"gemini HTTP {r.status_code}: {r.text[:200]}",
+                           retry_after=_retry_after(r) if r.status_code == 429 else None)
         if r.status_code >= 400:
             raise LLMError(f"gemini HTTP {r.status_code}: {r.text[:300]}", retriable=True)
         data = r.json()
@@ -169,9 +193,26 @@ class GeminiProvider:
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
+def _nullable_optionals(schema):
+    """O Groq valida a chamada no servidor e o modelo às vezes manda null num
+    parâmetro opcional ("jogador": null) -> 400. Opcional passa a aceitar null
+    (a botapi já descarta None)."""
+    req = set(schema.get("required") or [])
+    props = {}
+    for name, p in (schema.get("properties") or {}).items():
+        p = dict(p)
+        if name not in req and isinstance(p.get("type"), str):
+            p["type"] = [p["type"], "null"]
+            if "enum" in p:
+                p["enum"] = list(p["enum"]) + [None]
+        props[name] = p
+    return {**schema, "properties": props}
+
+
 def openai_tools(catalog):
     return [{"type": "function", "function": {"name": t["name"], "description": t["description"],
-                                              "parameters": t["parameters"]}} for t in catalog]
+                                              "parameters": _nullable_optionals(t["parameters"])}}
+            for t in catalog]
 
 
 def openai_messages(system, messages):
@@ -210,7 +251,10 @@ class OpenAICompatProvider:
         except httpx.HTTPError as e:
             raise LLMError(f"{self.name} rede: {e}") from e
         if r.status_code >= 400:
-            raise LLMError(f"{self.name} HTTP {r.status_code}: {r.text[:300]}")
+            retry = _retry_after(r) if r.status_code == 429 else None
+            if r.status_code == 400 and "tool_use_failed" in r.text:
+                retry = 0.0  # geração de tool inválida: sortear de novo costuma resolver
+            raise LLMError(f"{self.name} HTTP {r.status_code}: {r.text[:300]}", retry_after=retry)
         msg = (r.json().get("choices") or [{}])[0].get("message") or {}
         calls = []
         for c in msg.get("tool_calls") or []:
@@ -238,24 +282,51 @@ class FallbackProvider:
 
     name = "fallback"
 
-    def __init__(self, providers, cooldown_s=60, clock=time.monotonic):
+    MAX_WAIT_S = 20        # limite por minuto (TPM) pede espera curta: vale aguardar
+    MAX_TOTAL_WAIT_S = 45  # mas a resposta não pode demorar para sempre
+
+    def __init__(self, providers, cooldown_s=60, clock=time.monotonic, sleep=asyncio.sleep):
         if not providers:
             raise ValueError("Nenhum provedor de LLM configurado.")
         self.providers, self.cooldown_s, self.clock = providers, cooldown_s, clock
+        self.sleep = sleep
         self._bench = {}
 
     async def chat(self, system, messages, tools=None, temperature=0.9):
         now = self.clock()
         ready = [p for p in self.providers if self._bench.get(p.name, 0) <= now]
         order = ready or self.providers  # todo mundo de castigo: tenta mesmo assim
-        errors = []
+        errors, waits = [], []
         for p in order:
             try:
                 return await p.chat(system, messages, tools, temperature)
             except LLMError as e:
-                logger.warning("LLM %s falhou: %s", p.name, e)
+                logger.warning("LLM %s falhou: %s", p.name, str(e)[:200])
                 errors.append(f"{p.name}: {e}")
                 self._bench[p.name] = self.clock() + self.cooldown_s
+                if e.retry_after is not None and e.retry_after <= self.MAX_WAIT_S:
+                    waits.append((e.retry_after, p))
+        waited = 0.0
+        for _ in range(3):
+            # Todo mundo falhou, mas alguém só pediu uns segundos (limite por
+            # minuto do free tier): espera e tenta esse de novo.
+            if not waits:
+                break
+            wait, p = min(waits, key=lambda w: w[0])
+            if waited + wait > self.MAX_TOTAL_WAIT_S:
+                break
+            logger.info("Esperando %.1fs pelo %s (limite por minuto).", wait, p.name)
+            await self.sleep(wait + 0.5)
+            waited += wait + 0.5
+            waits = []
+            try:
+                resp = await p.chat(system, messages, tools, temperature)
+                self._bench.pop(p.name, None)
+                return resp
+            except LLMError as e:
+                errors.append(f"{p.name} (de novo): {e}")
+                if e.retry_after is not None and e.retry_after <= self.MAX_WAIT_S:
+                    waits.append((e.retry_after, p))
         raise LLMError(" | ".join(errors))
 
 

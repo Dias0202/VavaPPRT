@@ -181,3 +181,95 @@ async def test_loop_forca_resposta_quando_o_modelo_nao_para():
     text, trail = await run_tools_loop(p, "s", [], CATALOG, executor, max_steps=2)
     assert text == "chega" and len(trail) == 2
     assert p.calls[-1][2] is None  # última chamada sem tools
+
+
+async def test_429_curto_espera_e_tenta_de_novo():
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(429, json={"error": {"message":
+                "Rate limit reached on tokens per minute (TPM). Please try again in 8.205s."}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "voltei"}}]})
+
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    groq = GroqProvider("g", "m", client=_client(handler))
+    fb = FallbackProvider([groq], sleep=fake_sleep)
+    r = await fb.chat("s", [{"role": "user", "content": "x"}])
+    assert r.text == "voltei" and len(calls) == 2
+    assert slept == [pytest.approx(8.705)]
+
+
+async def test_429_longo_nao_espera():
+    gem = GeminiProvider("k", "m", client=_client(lambda req: httpx.Response(
+        429, json={"error": {"details": [{"retryDelay": "3600s"}]}})))
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    with pytest.raises(LLMError) as e:
+        await FallbackProvider([gem], sleep=fake_sleep).chat("s", [])
+    assert slept == [] and "429" in str(e.value)
+
+
+def test_le_retry_after_de_cada_formato():
+    from x9.llm import _retry_after
+    assert _retry_after(httpx.Response(429, headers={"retry-after": "7"})) == 7
+    assert _retry_after(httpx.Response(429, text='"retryDelay": "12s"')) == 12
+    assert _retry_after(httpx.Response(429, text="Please try again in 1.5s.")) == 1.5
+    assert _retry_after(httpx.Response(429, text="cota diária")) is None
+
+
+def test_retry_after_em_milissegundos():
+    from x9.llm import _retry_after
+    assert _retry_after(httpx.Response(429, text="try again in 899.99ms. Need")) == pytest.approx(0.89999)
+
+
+async def test_espera_curta_varias_vezes_dentro_do_orcamento():
+    n = []
+
+    def handler(req):
+        n.append(1)
+        if len(n) < 3:
+            return httpx.Response(429, text="Please try again in 5s.")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    fb = FallbackProvider([GroqProvider("g", "m", client=_client(handler))], sleep=fake_sleep)
+    assert (await fb.chat("s", [])).text == "ok"
+    assert slept == [5.5, 5.5]
+
+
+def test_opcionais_aceitam_null_no_groq():
+    from x9.llm import openai_tools
+    params = openai_tools(CATALOG)[1]["function"]["parameters"]
+    assert params["properties"]["round"]["type"] == "integer"          # obrigatório
+    assert params["properties"]["evento"]["type"] == ["string", "null"]  # opcional
+    assert params["properties"]["evento"]["enum"] == ["a", "b", None]
+    assert CATALOG[1]["parameters"]["properties"]["evento"]["type"] == "string"  # não mutou
+
+
+async def test_tool_use_failed_tenta_de_novo():
+    n = []
+
+    def handler(req):
+        n.append(1)
+        if len(n) == 1:
+            return httpx.Response(400, json={"error": {"code": "tool_use_failed"}})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    async def no_sleep(s):
+        pass
+
+    fb = FallbackProvider([GroqProvider("g", "m", client=_client(handler))], sleep=no_sleep)
+    assert (await fb.chat("s", [])).text == "ok" and len(n) == 2
