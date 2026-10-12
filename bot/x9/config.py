@@ -41,3 +41,9 @@ GOSSIP_MAX_AGE_H = _int("GOSSIP_MAX_AGE_H", 48)
 # desligado ou fora do ar) e o bot posta o placar ele mesmo.
 BOT_CLAIM_AFTER_MIN = _int("BOT_CLAIM_AFTER_MIN", 80)
 BOT_POSTS_SCOREBOARD = os.getenv("BOT_POSTS_SCOREBOARD", "1").strip() != "0"
+
+# Ao vivo: presença do Discord + checagens rápidas na HenrikDev (x9/live.py).
+# Precisa de Presence Intent e Server Members Intent ligados no Developer Portal.
+LIVE_ENABLED = os.getenv("LIVE_ENABLED", "1").strip() != "0"
+LIVE_BASE_EVERY_S = _int("LIVE_BASE_EVERY_S", 300)       # varredura de todos
+LIVE_PLAYING_EVERY_S = _int("LIVE_PLAYING_EVERY_S", 120)  # quem está jogando

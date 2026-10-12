@@ -66,12 +66,17 @@ def focus_from_trail(trail):
 
 class Brain:
     def __init__(self, provider, botapi, *, memory_turns=10, memory_ttl_s=900,
-                 clock=time.monotonic, now=datetime.now):
+                 clock=time.monotonic, now=datetime.now, local_tools=None):
         self.provider, self.botapi = provider, botapi
         self.memory_turns, self.memory_ttl_s = memory_turns, memory_ttl_s
         self.clock, self.now = clock, now
         self._mem = {}
-        self._catalog = botapi.tool_catalog()
+        # Tools que só o bot sabe responder (ex.: quem está jogando agora, pela
+        # presença do Discord): {nome: (fn(args) -> dict, descrição, schema)}.
+        self.local_tools = dict(local_tools or {})
+        self._catalog = botapi.tool_catalog() + [
+            {"name": n, "description": d, "parameters": p}
+            for n, (_, d, p) in self.local_tools.items()]
 
     # --- memória ------------------------------------------------------------
     def memory(self, key):
@@ -87,6 +92,12 @@ class Brain:
     # --- tools --------------------------------------------------------------
     def _executor(self, speaker_discord_id):
         async def run(name, args):
+            if name in self.local_tools:
+                try:
+                    return self.local_tools[name][0](args or {})
+                except Exception:
+                    logger.exception("Tool local %s falhou", name)
+                    return {"erro": "Deu ruim aqui dentro ao buscar isso."}
             return await asyncio.to_thread(self.botapi.call_tool, name, args,
                                            speaker_discord_id)
         return run

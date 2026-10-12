@@ -60,11 +60,17 @@ class _Poster:
 
 
 class X9Bot(discord.Client):
-    def __init__(self, brain, backend, transcriber):
+    def __init__(self, brain, backend, transcriber, live=None):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.voice_states = True
+        if live:
+            # presença ("jogando VALORANT") precisa dos dois intents privilegiados
+            intents.presences = True
+            intents.members = True
         super().__init__(intents=intents)
+        self.live = live
+        self._links, self._links_at = {}, 0.0
         self.brain, self.backend, self.transcriber = brain, backend, transcriber
         self.tree = app_commands.CommandTree(self)
         self.speaker = Speaker(config.TTS_ENGINE, config.TTS_VOICE, PiperEngine(config.PIPER_VOICE))
@@ -76,6 +82,9 @@ class X9Bot(discord.Client):
                                    claim_after_min=config.BOT_CLAIM_AFTER_MIN,
                                    post_scoreboard=config.BOT_POSTS_SCOREBOARD)
         self._announcer_task = None
+        self._live_task = None
+        if live:
+            live.on_new_matches = self.announcer.announce_now
         self.tree.add_command(build_commands(self))
 
     async def setup_hook(self):
@@ -93,6 +102,45 @@ class X9Bot(discord.Client):
         if self._announcer_task is None:
             self._announcer_task = asyncio.create_task(
                 self.announcer.run_forever(config.GOSSIP_POLL_S))
+        if self.live and self._live_task is None:
+            await self._seed_presences()
+            self._live_task = asyncio.create_task(self.live.run_forever())
+
+    # --- ao vivo (presença) ---------------------------------------------------
+    async def _puuid_of(self, user_id):
+        loop = asyncio.get_running_loop()
+        if loop.time() - self._links_at > 60:
+            self._links = await asyncio.to_thread(self.backend.db.discord_links)
+            self._links_at = loop.time()
+        return self._links.get(str(user_id))
+
+    @staticmethod
+    def valorant_activity(member):
+        for a in getattr(member, "activities", None) or ():
+            if (getattr(a, "name", "") or "").lower() == "valorant":
+                start = getattr(a, "start", None)
+                return {"details": getattr(a, "details", None), "state": getattr(a, "state", None),
+                        "start": start.timestamp() if start else None}
+        return None
+
+    async def _seed_presences(self):
+        await asyncio.to_thread(self.live.roster)
+        seen = set()
+        for g in self.guilds:
+            for m in g.members:
+                if m.bot or m.id in seen:
+                    continue
+                seen.add(m.id)
+                pu = await self._puuid_of(m.id)
+                if pu:
+                    self.live.on_presence(pu, self.valorant_activity(m))
+
+    async def on_presence_update(self, before, after):
+        if not self.live or after.bot:
+            return
+        pu = await self._puuid_of(after.id)
+        if pu:
+            self.live.on_presence(pu, self.valorant_activity(after))
 
     # --- conversa por texto ------------------------------------------------
     async def on_message(self, message):

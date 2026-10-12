@@ -67,6 +67,29 @@ class Announcer:
             posted += 1
         return posted
 
+    # --- 1b. placar na hora, do que o próprio bot acabou de baixar ----------
+    async def announce_now(self, match_ids):
+        """O ao-vivo baixou partidas: placar já (sem esperar a vez do poller —
+        o claim impede post duplo) e fofoca em seguida."""
+        db, announce = self.backend.db, self.backend.announce
+        posted = 0
+        if self.channel_id:
+            for mid in match_ids:
+                if not await self._db(db.claim_announcement, mid, "bot"):
+                    continue
+                try:
+                    embed = await self._db(announce.build_embed, mid)
+                    msg_id = await self.poster.post_embed(self.channel_id, embed)
+                except Exception:
+                    logger.exception("Falha ao postar o placar de %s", mid[:8])
+                    await self._db(db.release_announcement, mid)
+                    continue
+                await self._db(db.update_announcement, mid, channel_id=str(self.channel_id),
+                               message_id=str(msg_id))
+                posted += 1
+        await self.gossip_pending()
+        return posted
+
     # --- 2/3. fofoca --------------------------------------------------------
     async def gossip_pending(self):
         db = self.backend.db

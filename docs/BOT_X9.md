@@ -76,6 +76,31 @@ específicos**. Fala e escuta em **pt-br**, por texto e por voz, e roda inteiro 
 Primeira execução: a janela começa em `agora − 6 h` (`app_config.announce_since`),
 para não despejar o histórico inteiro no canal.
 
+### 2.1b Tempo (quase) real — `x9/live.py`
+
+Nem a Riot nem a HenrikDev expõem a partida **ao vivo**: ela só existe depois
+que acaba. O X9 encurta a espera de até 15 min (poller) para **1 a 3 min depois
+do fim da partida** (o que a HenrikDev demora para publicá-la):
+
+| Situação | O que o bot faz |
+|---|---|
+| Jogador vinculado com **VALORANT** na atividade do Discord | Consulta a HenrikDev para ele a cada 2 min |
+| A atividade **mudou** (saiu da partida, voltou ao menu) ou o jogo **fechou** | Rajada de checagens em +45 s, 2, 4 e 8 min |
+| Ninguém jogando / atividade oculta | Varredura de todos a cada 5 min |
+| Achou partida nova | Grava, atualiza RR, **posta o placar na hora** (claim) e a fofoca na thread; fala na call se estiver em uma |
+
+Orçamento: no máximo 1 consulta a cada 5 s (7 jogadores jogando ≈ 3,5 req/min
+dos 30 que a chave permite, dividida com o poller). O poller do GitHub continua
+rodando: é ele que anuncia quando o PC está desligado.
+
+Precisa, no Developer Portal, de **Presence Intent** e **Server Members
+Intent**. A presença só aparece para quem compartilha a atividade no Discord
+(Configurações → Privacidade da atividade) e está vinculado; para os outros
+vale a varredura de 5 min. A tool `quem_ta_jogando` responde "quem tá on agora?".
+
+Config: `LIVE_ENABLED` (padrão 1), `LIVE_BASE_EVERY_S` (300),
+`LIVE_PLAYING_EVERY_S` (120).
+
 ### 2.2 Fluxo de uma pergunta
 
 ```
@@ -174,6 +199,7 @@ Token errado: **401**. Tool inexistente: **404**.
 | `audio.py` | PCM 48 kHz estéreo → 16 kHz mono; MP3 → PCM 48 kHz (PyAV, sem ffmpeg) | não |
 | `stt.py` / `tts.py` | faster-whisper (CUDA → CPU automático) / `Speaker`: edge-tts → Piper | não |
 | `announcer.py` | claim, embed de fallback, fofoca na thread, voz proativa | interface |
+| `live.py` | presença → agenda de checagens na HenrikDev; anúncio na hora; `quem_ta_jogando` | não |
 | `voice.py` | sink de recepção, segmentação por silêncio, fila de fala | sim |
 | `discord_bot.py` | cliente, `/x9 …`, menções, threads | sim |
 

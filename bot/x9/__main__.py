@@ -93,9 +93,17 @@ def main(argv=None):
     backend = Backend()
     backend.botapi, backend.db, backend.announce = botapi, db, announce
     db.init_db()
+    live, local_tools = None, {}
+    if config.LIVE_ENABLED:
+        from .live import PLAYING_TOOL_DESC, PLAYING_TOOL_SCHEMA, LiveTracker
+        live = LiveTracker(backend, None, base_every=config.LIVE_BASE_EVERY_S,
+                           playing_every=config.LIVE_PLAYING_EVERY_S)
+        local_tools["quem_ta_jogando"] = (lambda args: live.playing_now(),
+                                          PLAYING_TOOL_DESC, PLAYING_TOOL_SCHEMA)
     brain = Brain(build_provider(), botapi, memory_turns=config.MEMORY_TURNS,
-                  memory_ttl_s=config.MEMORY_TTL_S)
-    bot = X9Bot(brain, backend, Transcriber(config.WHISPER_MODEL, config.WHISPER_DEVICE))
+                  memory_ttl_s=config.MEMORY_TTL_S, local_tools=local_tools)
+    bot = X9Bot(brain, backend, Transcriber(config.WHISPER_MODEL, config.WHISPER_DEVICE),
+                live=live)
     bot.run(config.DISCORD_TOKEN, log_handler=None)
 
 

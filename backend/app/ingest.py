@@ -117,8 +117,11 @@ def process_match(match, friend_puuids):
     }
 
 
-def ingest_user(user, friend_puuids):
-    """Ingere partidas v4 recentes de um usuário. Retorna nº de partidas novas."""
+def ingest_user(user, friend_puuids, collect=None):
+    """Ingere partidas v4 recentes de um usuário. Retorna nº de partidas novas.
+
+    collect: lista opcional que recebe os match_ids gravados (o bot X9 usa para
+    anunciar na hora o que acabou de baixar)."""
     name, tag = user["riot_id"], user["tagline"]
     region = user.get("region") or None
     data = api.fetch_matches_v4(name, tag, region=region)
@@ -146,6 +149,8 @@ def ingest_user(user, friend_puuids):
                              bundle["derived"], bundle["round_rows"], bundle["kill_rows"],
                              bundle.get("spatial_rows", []))
         new += 1
+        if collect is not None:
+            collect.append(mid)
         logger.info("Partida %s gravada (%d amigos).", mid, bundle["friends_here"])
     if puuid:
         now = int(time.time())
