@@ -79,12 +79,14 @@ class X9Bot(discord.Client):
         self.tree.add_command(build_commands(self))
 
     async def setup_hook(self):
-        if config.DISCORD_GUILD_ID:
-            guild = discord.Object(id=config.DISCORD_GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
+        # Comandos globais: valem em qualquer servidor onde o X9 entrar.
+        await self.tree.sync()
+        # Cópias por servidor (de versões antigas) apareceriam DUPLICADAS ao lado
+        # das globais: limpa nos servidores listados.
+        for gid in config.DISCORD_GUILD_IDS:
+            guild = discord.Object(id=gid)
+            self.tree.clear_commands(guild=guild)
             await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
 
     async def on_ready(self):
         logger.info("X9 online como %s em %d servidor(es).", self.user, len(self.guilds))

@@ -231,7 +231,7 @@ conectar e falar.
 | Privacidade de adversários | Labels por agente; teste automatizado garante que nenhum nome de não-membro sai das tools. |
 | Rastreados que nunca consentiram em ser zoados | O roster respeita `consent`; quem tem `consent=0` some das tools. O grupo deve combinar isso. |
 | O tier grátis do Gemini pode usar os dados para treino | Só sobem estatísticas de jogo e apelidos. |
-| edge-tts responde 403 (endpoint não oficial) | Fallback automático para o Piper local; edge volta a ser tentado após 30 min. |
+| edge-tts responde 403 (endpoint não oficial) | Desde out/2026 o host antigo recusa a síntese: o `x9.tts` aponta o edge-tts para `api.msedgeservices.com` (correção do PR #491, ainda não publicada no 7.2.8; vira no-op quando sair). Se ainda falhar, cai no Piper e tenta o edge de novo após 30 min. |
 | Whisper contínuo pesa no PC | Modelo `small`, transcrição só de falas de 0,4 a 15 s, com fila serializada. |
 | A recepção de voz usa um fork sem garantia de estabilidade | Commit fixado no `requirements.txt`; texto e anúncios funcionam mesmo se a voz quebrar. |
 | PC desligado | O webhook do poller continua postando o placar; a fofoca sai quando o bot voltar. |
@@ -272,3 +272,30 @@ No Developer Portal ficam ligados **Message Content** e **Server Members**
 (este para listar os membros na hora de vincular) e o **Public Bot desligado**
 (ligado, qualquer servidor poderia adicionar o X9 e consultar o grupo; para
 desligar, o link de instalação precisa estar em "Nenhum").
+
+---
+
+## 9. Outros servidores e novos vínculos
+
+**Vincular alguém** (precisa de *Gerenciar Servidor* no Discord):
+
+1. A pessoa tem que estar no grupo do **site** (cadastro próprio ou *Adicionar
+   jogador* no roster). O X9 só conhece quem está no roster.
+2. No Discord: `/x9 vincular membro:@fulano riot_id:Nome#TAG` (aceita também o
+   apelido do site). `/x9 vinculos` lista e `/x9 desvincular` desfaz.
+3. A pessoa precisa estar no mesmo servidor em que o comando é usado (é de lá
+   que sai o @). Sem vínculo tudo funciona, menos o "eu".
+
+**Colocar o X9 em outro servidor**: o bot é **privado** (Public Bot desligado),
+então só a conta dona do app adiciona. Com essa conta, abra
+
+`https://discord.com/oauth2/authorize?client_id=1559205573633908819&scope=bot%20applications.commands&permissions=309240876032`
+
+escolha o servidor (você precisa ter *Gerenciar Servidor* nele) e autorize.
+Os `/x9` são globais e aparecem sozinhos. Lembre que **é o mesmo grupo**: o X9
+responde com os dados do roster do site em qualquer servidor em que estiver.
+Para um grupo diferente seria outra instância (outro banco, outro app).
+
+O **placar automático** sai num canal só: o do webhook (`DISCORD_WEBHOOK_URL`
+no GitHub) e o `ANNOUNCE_CHANNEL_ID` do bot. Para trocar de canal, crie o webhook
+no canal novo e atualize os dois.

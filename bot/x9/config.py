@@ -16,7 +16,10 @@ def _int(name, default=None):
 
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
-DISCORD_GUILD_ID = _int("DISCORD_GUILD_ID")          # sync instantâneo dos /comandos
+# Servidores do grupo (vírgula-separados). Os /comandos são globais; aqui o
+# bot só limpa cópias antigas por servidor, que apareceriam duplicadas.
+DISCORD_GUILD_IDS = [int(x) for x in os.getenv("DISCORD_GUILD_ID", "").replace(" ", "").split(",")
+                     if x.isdigit()]
 ANNOUNCE_CHANNEL_ID = _int("ANNOUNCE_CHANNEL_ID")    # canal do placar
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()

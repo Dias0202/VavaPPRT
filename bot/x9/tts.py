@@ -35,9 +35,30 @@ def clean_for_speech(text):
     return re.sub(r"\s+", " ", t).strip()
 
 
+EDGE_NEW_HOST = "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
+
+
+def patch_edge_endpoint(communicate_module=None):
+    """Desde out/2026 o host antigo (speech.platform.bing.com) responde 403 à
+    síntese; o Edge 155 sintetiza por api.msedgeservices.com, que aceita o mesmo
+    token como Ocp-Apim-Subscription-Key (correção do PR #491 do edge-tts, ainda
+    não publicada no 7.2.8). Só troca se a versão instalada ainda usar o host
+    antigo: quando a correção sair, vira no-op."""
+    if communicate_module is None:
+        import edge_tts.communicate as communicate_module
+    from edge_tts.constants import TRUSTED_CLIENT_TOKEN
+
+    if "speech.platform.bing.com" in communicate_module.WSS_URL:
+        communicate_module.WSS_URL = f"{EDGE_NEW_HOST}?Ocp-Apim-Subscription-Key={TRUSTED_CLIENT_TOKEN}"
+        return True
+    return False
+
+
 async def edge_synthesize(text, voice="pt-BR-AntonioNeural", rate="+8%"):
     """PCM 48 kHz estéreo via edge-tts."""
     import edge_tts
+
+    patch_edge_endpoint()
 
     mp3 = bytearray()
     async for chunk in edge_tts.Communicate(text, voice, rate=rate).stream():

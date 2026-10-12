@@ -121,3 +121,14 @@ async def test_speaker_motor_fixo():
     assert await Speaker("piper", piper=piper, edge=edge).synthesize("oi") == b"piper"
     with pytest.raises(ValueError):
         await Speaker("piper", piper=piper).synthesize("😂")
+
+
+def test_patch_do_host_do_edge_so_troca_o_antigo():
+    from types import SimpleNamespace
+
+    from x9.tts import EDGE_NEW_HOST, patch_edge_endpoint
+    old = SimpleNamespace(WSS_URL="wss://speech.platform.bing.com/consumer/speech/synthesize/"
+                                  "readaloud/edge/v1?TrustedClientToken=abc")
+    assert patch_edge_endpoint(old) is True
+    assert old.WSS_URL.startswith(EDGE_NEW_HOST + "?Ocp-Apim-Subscription-Key=")
+    assert patch_edge_endpoint(old) is False  # já corrigido: não mexe de novo
