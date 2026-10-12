@@ -43,10 +43,28 @@ async def check_llm():
         return f"LLM FALHOU: {e}"
 
 
+def setup_logging():
+    """Console + bot/logs/x9.log (rotativo, 5 × 2 MB): rodando oculto pela
+    tarefa agendada, o arquivo é o único lugar onde dá para ver o que houve."""
+    from logging.handlers import RotatingFileHandler
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if sys.stderr is not None:  # pythonw (tarefa agendada) não tem console
+        console = logging.StreamHandler()
+        console.setFormatter(fmt)
+        root.addHandler(console)
+    logs = config.BOT_DIR / "logs"
+    logs.mkdir(exist_ok=True)
+    fh = RotatingFileHandler(logs / "x9.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8")
+    fh.setFormatter(fmt)
+    root.addHandler(fh)
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_logging()
     probs = problems()
     if argv[:1] == ["check"]:
         for p in probs:

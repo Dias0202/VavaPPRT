@@ -1,0 +1,5 @@
+# Opcional: Whisper na GPU NVIDIA (Windows/Linux). Sem isto o bot usa a CPU.
+# ctranslate2 4.x precisa de CUDA 12 + cuDNN 9; os DLLs ficam no venv e o
+# x9.stt os registra sozinho.
+nvidia-cublas-cu12>=12.4,<13
+nvidia-cudnn-cu12>=9.1,<10

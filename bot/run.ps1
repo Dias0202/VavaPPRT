@@ -12,6 +12,10 @@ if (-not (Test-Path $py)) {
     py -3.11 -m venv (Join-Path $root ".venv")
     & $py -m pip install --upgrade pip --quiet
     & $py -m pip install -r (Join-Path $root "requirements.txt")
+    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        Write-Host "GPU NVIDIA detectada: instalando cuBLAS/cuDNN para o Whisper..." -ForegroundColor Cyan
+        & $py -m pip install -r (Join-Path $root "requirements-gpu.txt")
+    }
 }
 if (-not (Test-Path (Join-Path $root ".env"))) {
     Copy-Item (Join-Path $root ".env.example") (Join-Path $root ".env")

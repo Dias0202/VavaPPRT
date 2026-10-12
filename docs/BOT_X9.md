@@ -256,10 +256,19 @@ conectar e falar.
    (`GROQ_API_KEY`).
 5. **No PC**: `cd bot` → `.\run.ps1` (cria a venv com Python 3.11 e o `.env`),
    preencha o `bot\.env`, rode `.\run.ps1 check` e depois `.\run.ps1`.
+   Para deixar ligado sozinho: `.\install-autostart.ps1` (tarefa agendada
+   "X9 Discord Bot": sobe oculto no logon e reinicia se cair; log em
+   `bot\logs\x9.log`; `-Remove` desinstala).
 6. No Discord: `/x9 vincular @fulano Nome#TAG` para cada um do grupo.
 7. Teste: `@X9 quem carregou na última?`, `/x9 ultima`, `/x9 entrar` e fale
    "X9, conta o round 13".
 
 A primeira entrada na call baixa o Whisper `small` (~460 MB) e a voz do Piper
-(~63 MB). Para usar a GPU (NVIDIA) no Whisper, instale as DLLs do cuBLAS 12/
-cuDNN 9; sem elas o bot usa a CPU (~2 s por frase com o `small`).
+(~63 MB). Com GPU NVIDIA, o `run.ps1` instala `requirements-gpu.txt` (cuBLAS 12
+e cuDNN 9 como wheels dentro da venv) e o Whisper roda na CUDA (~1 s por frase
+numa GTX 1650 Super). Sem GPU, roda na CPU (~2 s por frase).
+
+No Developer Portal ficam ligados **Message Content** e **Server Members**
+(este para listar os membros na hora de vincular) e o **Public Bot desligado**
+(ligado, qualquer servidor poderia adicionar o X9 e consultar o grupo; para
+desligar, o link de instalação precisa estar em "Nenhum").

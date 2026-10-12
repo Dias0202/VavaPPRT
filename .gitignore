@@ -29,3 +29,4 @@ _api_dump/
 # Bot X9
 bot/.env
 bot/models/
+bot/logs/
