@@ -15,6 +15,7 @@ a inviabilidade da API oficial da Riot para projetos pessoais — ver
 | **Documento de design técnico** | [docs/SDD.md](docs/SDD.md) |
 | **Guia de deploy (grátis)** | [docs/DEPLOY_WEB.md](docs/DEPLOY_WEB.md) |
 | **Plano de análise / catálogo de métricas** | [docs/PLANO_ANALYTICS.md](docs/PLANO_ANALYTICS.md) |
+| **Bot X9 do Discord (SDD + setup)** | [docs/BOT_X9.md](docs/BOT_X9.md) |
 
 ---
 
@@ -33,6 +34,13 @@ a inviabilidade da API oficial da Riot para projetos pessoais — ver
                                                                       ▼
                                                        API HenrikDev (v4, 30 req/min)
 ```
+
+**Bot X9 (Discord):** o poller também posta o placar de cada partida nova num
+webhook do Discord; o bot X9 (roda no PC de alguém do grupo) lê o mesmo banco
+pela `botapi`, zoa quem jogou mal na thread do placar, responde perguntas por
+texto (`@X9`) e por voz ("X9, conta o round 13"), em pt-br e 100% free tier
+(Gemini → Groq, Whisper local, edge-tts/Piper). Detalhes em
+[docs/BOT_X9.md](docs/BOT_X9.md).
 
 **Princípio central:** a API Basic da HenrikDev permite só **30 req/min**. As
 páginas servem **exclusivamente do banco** — nunca chamam a Henrik no
@@ -101,13 +109,18 @@ backend/                 FastAPI — serve só do banco
     progress.py            tendência, sessões, RR, metas, semana
     ingest.py              ingestão v4 + backfill + deep backfill em rodízio
     poll.py                entrypoint do poller
+    botapi.py              tools do bot X9 (contrato para LLM) + espelho /bot/v1
+    announce.py            placar das partidas novas no webhook do Discord
   tests/                   pytest (fixtures v4 anonimizadas)
   requirements.txt · requirements-dev.txt · .env.example
+bot/                     bot X9 do Discord (discord.py + Gemini/Groq + Whisper/TTS)
+  x9/                      llm · brain · announcer · voice · wake · stt · tts
+  tests/ · requirements.txt · .env.example · run.ps1
 frontend/                React SPA (tema "HUD tático")
   src/{pages,components,lib}
   package.json · .env.example · dev.ps1
 .github/workflows/       ci.yml · pages.yml · poll.yml · backfill.yml · deep-backfill.yml
-docs/                    PDD · SDD · DEPLOY_WEB · PLANO_ANALYTICS · PLANO_FINALIZACAO
+docs/                    PDD · SDD · DEPLOY_WEB · PLANO_ANALYTICS · PLANO_FINALIZACAO · BOT_X9
 ```
 
 ## Rodar localmente

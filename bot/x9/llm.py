@@ -1,0 +1,287 @@
+"""LLM com tools: Gemini (principal) e Groq (fallback), via HTTP puro.
+
+Formato interno de mensagem (independente do provedor):
+    {"role": "user", "content": str}
+    {"role": "assistant", "content": str | None, "tool_calls": [{"id", "name", "args"}],
+     "raw": {"gemini": [...parts]}}          # raw opcional, para ecoar ao mesmo provedor
+    {"role": "tool", "tool_call_id": str, "name": str, "content": dict}
+
+Os dois provedores entendem esse formato, então trocar de um para o outro no
+meio de uma conversa (Gemini estourou a cota) não perde o histórico.
+"""
+import asyncio
+import json
+import logging
+import time
+import uuid
+from dataclasses import dataclass, field
+
+import httpx
+
+logger = logging.getLogger("x9.llm")
+
+MAX_TOOL_RESULT_CHARS = 8000
+
+
+class LLMError(Exception):
+    def __init__(self, msg, retriable=True):
+        super().__init__(msg)
+        self.retriable = retriable
+
+
+@dataclass
+class LLMResponse:
+    text: str = ""
+    tool_calls: list = field(default_factory=list)  # [{"id", "name", "args"}]
+    raw: dict = field(default_factory=dict)
+    provider: str = ""
+
+
+def _tool_json(content):
+    s = json.dumps(content, ensure_ascii=False, default=str)
+    if len(s) > MAX_TOOL_RESULT_CHARS:
+        s = s[:MAX_TOOL_RESULT_CHARS] + "…(cortado)"
+    return s
+
+
+def _tool_payload(content):
+    """O objeto em si quando cabe; senão o JSON cortado como texto."""
+    s = _tool_json(content)
+    return content if len(s) <= MAX_TOOL_RESULT_CHARS else s
+
+
+# ---------------------------------------------------------------------------
+# Gemini
+# ---------------------------------------------------------------------------
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+# Tom "sem filtro" decidido no design: zoeira entre amigos é assédio para o
+# classificador. Discurso de ódio continua barrado (e proibido no prompt).
+GEMINI_SAFETY = [
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+]
+
+
+def _gemini_schema(schema):
+    """JSON Schema -> Schema OpenAPI do Gemini (tipos em MAIÚSCULAS)."""
+    out = {}
+    for k, v in schema.items():
+        if k == "type":
+            out["type"] = str(v).upper()
+        elif k == "properties":
+            out["properties"] = {n: _gemini_schema(p) for n, p in v.items()}
+        elif k == "items":
+            out["items"] = _gemini_schema(v)
+        elif k == "required":
+            if v:
+                out["required"] = list(v)
+        elif k in ("description", "enum"):
+            out[k] = v
+    return out
+
+
+def gemini_tools(catalog):
+    decls = []
+    for t in catalog:
+        d = {"name": t["name"], "description": t["description"]}
+        # OBJECT sem propriedades é rejeitado pelo Gemini: tool sem parâmetro
+        # vai sem o campo `parameters`.
+        if t["parameters"].get("properties"):
+            d["parameters"] = _gemini_schema(t["parameters"])
+        decls.append(d)
+    return [{"functionDeclarations": decls}] if decls else []
+
+
+def gemini_contents(messages):
+    contents = []
+
+    def push(role, parts):
+        if contents and contents[-1]["role"] == role:
+            contents[-1]["parts"].extend(parts)
+        else:
+            contents.append({"role": role, "parts": list(parts)})
+
+    for m in messages:
+        if m["role"] == "user":
+            push("user", [{"text": m["content"]}])
+        elif m["role"] == "assistant":
+            parts = (m.get("raw") or {}).get("gemini")
+            if not parts:
+                parts = []
+                if m.get("content"):
+                    parts.append({"text": m["content"]})
+                parts += [{"functionCall": {"name": c["name"], "args": c["args"]}}
+                          for c in m.get("tool_calls") or []]
+            push("model", parts)
+        elif m["role"] == "tool":
+            push("user", [{"functionResponse": {"name": m["name"],
+                                                "response": {"result": _tool_payload(m["content"])}}}])
+    return contents
+
+
+class GeminiProvider:
+    name = "gemini"
+
+    def __init__(self, api_key, model, client=None, timeout=40):
+        self.api_key, self.model = api_key, model
+        self.client = client or httpx.AsyncClient(timeout=timeout)
+
+    async def chat(self, system, messages, tools=None, temperature=0.9):
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": gemini_contents(messages),
+            "safetySettings": GEMINI_SAFETY,
+            "generationConfig": {"temperature": temperature, "maxOutputTokens": 2048},
+        }
+        if tools:
+            body["tools"] = gemini_tools(tools)
+        try:
+            r = await self.client.post(_GEMINI_URL.format(model=self.model), json=body,
+                                       headers={"x-goog-api-key": self.api_key})
+        except httpx.HTTPError as e:
+            raise LLMError(f"gemini rede: {e}") from e
+        if r.status_code == 429 or r.status_code >= 500:
+            raise LLMError(f"gemini HTTP {r.status_code}: {r.text[:200]}")
+        if r.status_code >= 400:
+            raise LLMError(f"gemini HTTP {r.status_code}: {r.text[:300]}", retriable=True)
+        data = r.json()
+        cands = data.get("candidates") or []
+        if not cands:
+            raise LLMError(f"gemini sem resposta ({(data.get('promptFeedback') or {}).get('blockReason')})")
+        cand = cands[0]
+        parts = (cand.get("content") or {}).get("parts") or []
+        if not parts and cand.get("finishReason") not in (None, "STOP"):
+            raise LLMError(f"gemini parou: {cand.get('finishReason')}")
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+        calls = [{"id": f"call_{uuid.uuid4().hex[:8]}", "name": p["functionCall"]["name"],
+                  "args": p["functionCall"].get("args") or {}}
+                 for p in parts if p.get("functionCall")]
+        return LLMResponse(text=text.strip(), tool_calls=calls, raw={"gemini": parts},
+                           provider=self.name)
+
+
+# ---------------------------------------------------------------------------
+# Groq (API compatível com OpenAI)
+# ---------------------------------------------------------------------------
+_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+
+def openai_tools(catalog):
+    return [{"type": "function", "function": {"name": t["name"], "description": t["description"],
+                                              "parameters": t["parameters"]}} for t in catalog]
+
+
+def openai_messages(system, messages):
+    out = [{"role": "system", "content": system}]
+    for m in messages:
+        if m["role"] == "user":
+            out.append({"role": "user", "content": m["content"]})
+        elif m["role"] == "assistant":
+            msg = {"role": "assistant", "content": m.get("content") or ""}
+            if m.get("tool_calls"):
+                msg["tool_calls"] = [{"id": c["id"], "type": "function",
+                                      "function": {"name": c["name"],
+                                                   "arguments": json.dumps(c["args"], ensure_ascii=False)}}
+                                     for c in m["tool_calls"]]
+            out.append(msg)
+        elif m["role"] == "tool":
+            out.append({"role": "tool", "tool_call_id": m["tool_call_id"],
+                        "content": _tool_json(m["content"])})
+    return out
+
+
+class OpenAICompatProvider:
+    def __init__(self, api_key, model, url=_GROQ_URL, name="groq", client=None, timeout=40):
+        self.api_key, self.model, self.url, self.name = api_key, model, url, name
+        self.client = client or httpx.AsyncClient(timeout=timeout)
+
+    async def chat(self, system, messages, tools=None, temperature=0.9):
+        body = {"model": self.model, "messages": openai_messages(system, messages),
+                "temperature": temperature, "max_tokens": 2048}
+        if tools:
+            body["tools"] = openai_tools(tools)
+            body["tool_choice"] = "auto"
+        try:
+            r = await self.client.post(self.url, json=body,
+                                       headers={"Authorization": f"Bearer {self.api_key}"})
+        except httpx.HTTPError as e:
+            raise LLMError(f"{self.name} rede: {e}") from e
+        if r.status_code >= 400:
+            raise LLMError(f"{self.name} HTTP {r.status_code}: {r.text[:300]}")
+        msg = (r.json().get("choices") or [{}])[0].get("message") or {}
+        calls = []
+        for c in msg.get("tool_calls") or []:
+            fn = c.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except ValueError:
+                args = {}
+            calls.append({"id": c.get("id") or f"call_{uuid.uuid4().hex[:8]}",
+                          "name": fn.get("name"), "args": args})
+        return LLMResponse(text=(msg.get("content") or "").strip(), tool_calls=calls,
+                           provider=self.name)
+
+
+def GroqProvider(api_key, model, client=None, timeout=40):
+    return OpenAICompatProvider(api_key, model, client=client, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Fallback
+# ---------------------------------------------------------------------------
+class FallbackProvider:
+    """Tenta cada provedor em ordem. Quem falha fica de castigo por `cooldown_s`
+    (não adianta martelar o Gemini depois de um 429 de cota)."""
+
+    name = "fallback"
+
+    def __init__(self, providers, cooldown_s=60, clock=time.monotonic):
+        if not providers:
+            raise ValueError("Nenhum provedor de LLM configurado.")
+        self.providers, self.cooldown_s, self.clock = providers, cooldown_s, clock
+        self._bench = {}
+
+    async def chat(self, system, messages, tools=None, temperature=0.9):
+        now = self.clock()
+        ready = [p for p in self.providers if self._bench.get(p.name, 0) <= now]
+        order = ready or self.providers  # todo mundo de castigo: tenta mesmo assim
+        errors = []
+        for p in order:
+            try:
+                return await p.chat(system, messages, tools, temperature)
+            except LLMError as e:
+                logger.warning("LLM %s falhou: %s", p.name, e)
+                errors.append(f"{p.name}: {e}")
+                self._bench[p.name] = self.clock() + self.cooldown_s
+        raise LLMError(" | ".join(errors))
+
+
+# ---------------------------------------------------------------------------
+# Loop de tools
+# ---------------------------------------------------------------------------
+async def run_tools_loop(provider, system, messages, catalog, executor, max_steps=6):
+    """Conversa até o modelo responder em texto. Devolve (texto, trilha)
+    onde trilha = [(nome, args, resultado)] das tools chamadas."""
+    msgs = list(messages)
+    trail = []
+    for _ in range(max_steps):
+        resp = await provider.chat(system, msgs, catalog)
+        if not resp.tool_calls:
+            if resp.text:
+                return resp.text, trail
+            break
+        msgs.append({"role": "assistant", "content": resp.text or None,
+                     "tool_calls": resp.tool_calls,
+                     "raw": resp.raw if resp.provider == "gemini" else {}})
+        results = await asyncio.gather(*(executor(c["name"], c["args"]) for c in resp.tool_calls))
+        for c, res in zip(resp.tool_calls, results):
+            trail.append((c["name"], c["args"], res))
+            msgs.append({"role": "tool", "tool_call_id": c["id"], "name": c["name"],
+                         "content": res})
+    # Estourou os passos (ou veio vazio): força uma resposta sem tools.
+    msgs.append({"role": "user", "content": "Responda agora com o que já tem, sem chamar ferramentas."})
+    resp = await provider.chat(system, msgs, None)
+    return resp.text or "…", trail

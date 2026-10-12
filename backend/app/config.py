@@ -49,3 +49,18 @@ def admin_riot():
         return None
     name, tag = ADMIN_RIOT_ID.rsplit("#", 1)
     return name.strip().lower(), tag.strip().lower()
+
+
+# --- Bot X9 (docs/BOT_X9.md) ------------------------------------------------
+# Token de serviço do espelho HTTP /bot/v1. Vazio = rota desligada (503).
+BOT_API_TOKEN = os.getenv("BOT_API_TOKEN", "").strip()
+
+# Webhook do canal do placar. Vazio = o poller não anuncia nada.
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+
+# Link para a página da partida no embed (ex.: https://dias0202.github.io/VavaPPRT).
+SITE_URL = os.getenv("SITE_URL", "").strip().rstrip("/")
+
+# Na primeira execução, só anuncia partidas das últimas N horas (não despeja o
+# histórico inteiro no canal).
+ANNOUNCE_LOOKBACK_HOURS = int(os.getenv("ANNOUNCE_LOOKBACK_HOURS", "6"))

@@ -199,3 +199,16 @@ their puuid nulled.
 | GET | `/players/{riot_id}/{tagline}/vs-lobby` | — | Placement, team/match MVP %, you vs teammates/enemies, you vs your tier |
 
 `/group/round-analysis` was folded into `/group/correlation` (`survivors`).
+
+---
+
+## Bot X9 (`/bot/v1`) — espelho da botapi
+
+Auth: `Authorization: Bearer $BOT_API_TOKEN` (token de serviço, **não** o JWT de
+usuário). Sem `BOT_API_TOKEN` no servidor a rota responde 503. Contrato completo
+das tools em [BOT_X9.md §4](BOT_X9.md#4-contrato-da-botapi-tools).
+
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| GET | `/bot/v1/tools` | — | Catálogo: `[{name, description, parameters}]` (JSON Schema) |
+| POST | `/bot/v1/tools/{name}` | `{"args": {...}, "discord_id"?: "..."}` | Executa a tool (erros de uso voltam como `{"erro": "..."}`) |

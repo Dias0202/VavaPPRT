@@ -25,3 +25,7 @@ _api_dump/
 .DS_Store
 .vscode/
 .pytest_cache/
+
+# Bot X9
+bot/.env
+bot/models/

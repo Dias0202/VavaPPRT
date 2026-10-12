@@ -366,6 +366,23 @@ def init_db():
             PRIMARY KEY (match_id, round_id, puuid, event_type, time_ms)
         )""")
 
+        # Bot X9 (docs/BOT_X9.md): quem é quem no Discord, mapeado pelo admin.
+        cur.execute("""CREATE TABLE IF NOT EXISTS discord_links (
+            discord_id TEXT PRIMARY KEY,
+            puuid TEXT NOT NULL,
+            linked_by TEXT,
+            created_raw BIGINT
+        )""")
+
+        # Uma linha por partida anunciada. O INSERT é o "claim": poller e bot
+        # disputam a mesma partida e só quem insere posta o placar.
+        cur.execute("""CREATE TABLE IF NOT EXISTS bot_announcements (
+            match_id TEXT PRIMARY KEY,
+            claimed_by TEXT, claimed_raw BIGINT,
+            channel_id TEXT, message_id TEXT, thread_id TEXT,
+            gossip_raw BIGINT, voice_raw BIGINT
+        )""")
+
         for stmt in (
             "CREATE INDEX IF NOT EXISTS idx_mp_puuid ON match_players(puuid)",
             "CREATE INDEX IF NOT EXISTS idx_pmd_puuid ON player_match_derived(puuid)",
@@ -1099,6 +1116,8 @@ def purge_puuid(puuid):
             cur.execute(f"UPDATE kills SET {col} = NULL WHERE {col} = {ph}", (puuid,))
         cur.execute(f"DELETE FROM tracked_players WHERE puuid = {ph}", (puuid,))
         counts["tracked_players"] = cur.rowcount
+        cur.execute(f"DELETE FROM discord_links WHERE puuid = {ph}", (puuid,))
+        counts["discord_links"] = cur.rowcount
         conn.commit()
         return counts
     finally:
@@ -1262,3 +1281,118 @@ def tier_baselines():
         "FROM match_players mp JOIN matches m ON m.match_id = mp.match_id "
         "WHERE m.raw_gz IS NOT NULL AND mp.tier IS NOT NULL AND mp.tier > 0 "
         "GROUP BY mp.tier")
+
+
+# ---------------------------------------------------------------------------
+# Bot X9 — vínculos Discord e anúncios de partida (docs/BOT_X9.md)
+# ---------------------------------------------------------------------------
+def link_discord(discord_id, puuid, linked_by=None):
+    conn = get_connection()
+    try:
+        _upsert(conn, "discord_links", ["discord_id", "puuid", "linked_by", "created_raw"],
+                ["discord_id"], (str(discord_id), puuid,
+                                 str(linked_by) if linked_by else None, int(time.time())),
+                update=True)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def unlink_discord(discord_id):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"DELETE FROM discord_links WHERE discord_id = {_ph(conn)}", (str(discord_id),))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def discord_links():
+    """discord_id -> puuid."""
+    return {r["discord_id"]: r["puuid"] for r in _query("SELECT * FROM discord_links")}
+
+
+def claim_announcement(match_id, by):
+    """Tenta ser o dono do anúncio da partida. True = ganhou (deve postar)."""
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        cur = conn.cursor()
+        cur.execute(f"INSERT INTO bot_announcements (match_id, claimed_by, claimed_raw) "
+                    f"VALUES ({ph},{ph},{ph}) ON CONFLICT (match_id) DO NOTHING",
+                    (match_id, by, int(time.time())))
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def release_announcement(match_id):
+    """Desfaz um claim cujo post falhou (outra execução tenta de novo)."""
+    conn = get_connection()
+    try:
+        conn.cursor().execute(f"DELETE FROM bot_announcements WHERE match_id = {_ph(conn)}",
+                              (match_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_ANN_FIELDS = {"channel_id", "message_id", "thread_id", "gossip_raw", "voice_raw"}
+
+
+def update_announcement(match_id, **fields):
+    bad = set(fields) - _ANN_FIELDS
+    if bad:
+        raise ValueError(f"campos inválidos: {bad}")
+    if not fields:
+        return
+    conn = get_connection()
+    try:
+        ph = _ph(conn)
+        sets = ", ".join(f"{k} = {ph}" for k in fields)
+        conn.cursor().execute(f"UPDATE bot_announcements SET {sets} WHERE match_id = {ph}",
+                              tuple(fields.values()) + (match_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_announcement(match_id):
+    rows = _query("SELECT * FROM bot_announcements WHERE match_id = ?", (match_id,))
+    return rows[0] if rows else None
+
+
+def announcements_pending_gossip(since_raw):
+    """Anúncios já postados (têm mensagem) que ainda não ganharam a fofoca."""
+    return _query("SELECT a.*, m.started_raw FROM bot_announcements a "
+                  "JOIN matches m ON m.match_id = a.match_id "
+                  "WHERE a.gossip_raw IS NULL AND a.message_id IS NOT NULL "
+                  "AND a.claimed_raw >= ? ORDER BY m.started_raw", (since_raw,))
+
+
+def unannounced_group_matches(puuids, since_raw):
+    """Partidas (mais antigas primeiro) com alguém do grupo, iniciadas depois de
+    since_raw e ainda sem linha em bot_announcements."""
+    if not puuids:
+        return []
+    marks = ",".join("?" for _ in puuids)
+    return [r["match_id"] for r in _query(
+        f"SELECT m.match_id FROM matches m WHERE m.started_raw >= ? "
+        f"AND EXISTS (SELECT 1 FROM match_players mp WHERE mp.match_id = m.match_id "
+        f"AND mp.puuid IN ({marks})) "
+        f"AND NOT EXISTS (SELECT 1 FROM bot_announcements a WHERE a.match_id = m.match_id) "
+        f"ORDER BY m.started_raw", (since_raw, *puuids))]
+
+
+def group_matches(puuids, limit=10, offset=0):
+    """match_ids mais recentes primeiro em que alguém de `puuids` jogou."""
+    if not puuids:
+        return []
+    marks = ",".join("?" for _ in puuids)
+    return [r["match_id"] for r in _query(
+        f"SELECT m.match_id FROM matches m WHERE EXISTS (SELECT 1 FROM match_players mp "
+        f"WHERE mp.match_id = m.match_id AND mp.puuid IN ({marks})) "
+        f"ORDER BY m.started_raw DESC LIMIT ? OFFSET ?", (*puuids, limit, offset))]

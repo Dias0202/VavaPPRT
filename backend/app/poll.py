@@ -20,7 +20,7 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-from . import config, db
+from . import announce, config, db
 from .ingest import ingest_all, backfill_all, deep_backfill_all, recompute_all
 
 
@@ -61,6 +61,13 @@ def main(argv=None):
         result = ingest_all()
         print(f"OK: {result['players']} jogadores, {result['new_matches']} partidas novas, "
               f"{result.get('deep_upgraded', 0)} re-hidratadas.")
+        if config.DISCORD_WEBHOOK_URL:
+            # Anúncio é bônus: Discord fora do ar não pode deixar o poller vermelho.
+            try:
+                n_ann = announce.run()
+                print(f"DISCORD: {n_ann} partida(s) anunciada(s).")
+            except Exception as e:
+                print(f"  aviso: anúncio no Discord falhou: {e}")
         errs = result.get("errors") or []
         for e in errs:
             print(f"  aviso: {e}")

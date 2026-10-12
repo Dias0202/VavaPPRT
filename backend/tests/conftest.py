@@ -64,7 +64,8 @@ def _database():
 TABLES = ["users", "tracked_players", "app_config", "matches", "match_players",
           "player_match_derived", "player_round_stats", "kills", "spatial_events",
           "rank_history", "rank_profile", "rank_season", "player_goals",
-          "ingest_runs", "ingest_state", "cache_telemetry"]
+          "ingest_runs", "ingest_state", "cache_telemetry", "discord_links",
+          "bot_announcements"]
 
 
 @pytest.fixture()

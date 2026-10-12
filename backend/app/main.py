@@ -11,6 +11,7 @@ from fastapi import FastAPI, Depends, HTTPException, Header, Query, BackgroundTa
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import config, db, auth, analytics, ingest, progress, squad, matchview
+from .bot_routes import router as bot_router
 from . import valorant_api as vapi
 from .schemas import (RegisterIn, LoginIn, TokenOut, MeOut, AddPlayerIn,
                       GroupDetailIn, GoalIn, DeleteMeIn, MapPoolIn, MembersIn, PasswordIn)
@@ -43,6 +44,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(bot_router)
 
 
 def any_user(authorization: str = Header(default="")):

@@ -47,6 +47,9 @@ jobs:
           HENRIKDEV_API_KEY: ${{ secrets.HENRIKDEV_API_KEY }}
           DEFAULT_REGION: ${{ vars.DEFAULT_REGION || 'na' }}
           DEEP_PER_RUN: ${{ vars.DEEP_PER_RUN || '10' }}
+          # Bot X9: placar de cada partida nova no Discord (vazio = não anuncia).
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SITE_URL: ${{ vars.SITE_URL }}
         run: python -m app.poll
 
       - name: Keepalive do cron

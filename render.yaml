@@ -32,3 +32,5 @@ services:
         value: https://dias0202.github.io
       - key: DEFAULT_REGION
         value: na
+      - key: BOT_API_TOKEN # espelho /bot/v1 do bot X9 (vazio = rota desligada)
+        sync: false
