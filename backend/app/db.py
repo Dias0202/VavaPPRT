@@ -396,6 +396,28 @@ def init_db():
             gossip_raw BIGINT, voice_raw BIGINT
         )""")
 
+        # Memória longa do X9: apelidos conquistados, momentos marcantes e
+        # piadas internas, com validade. `lore_key` torna a gravação idempotente.
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS bot_lore (
+            id {serial_pk},
+            lore_key TEXT UNIQUE,
+            puuid TEXT, kind TEXT, text TEXT,
+            created_raw BIGINT, expires_raw BIGINT
+        )""")
+
+        # /x9 aposta: palpite na próxima partida do grupo, liquidado pelo X9.
+        cur.execute(f"""CREATE TABLE IF NOT EXISTS bot_bets (
+            id {serial_pk},
+            discord_id TEXT, pick TEXT, created_raw BIGINT,
+            match_id TEXT, hit INTEGER, settled_raw BIGINT
+        )""")
+
+        # Votação de MVP pelos botões da thread (um voto por pessoa por partida).
+        cur.execute("""CREATE TABLE IF NOT EXISTS bot_mvp_votes (
+            match_id TEXT, voter TEXT, puuid TEXT, voted_raw BIGINT,
+            PRIMARY KEY (match_id, voter)
+        )""")
+
         for stmt in (
             "CREATE INDEX IF NOT EXISTS idx_mp_puuid ON match_players(puuid)",
             "CREATE INDEX IF NOT EXISTS idx_pmd_puuid ON player_match_derived(puuid)",
@@ -433,6 +455,13 @@ _ADDED_COLUMNS = {
     "users": [("status", "TEXT DEFAULT 'approved'")],
     # Apelido de quem é rastreado sem login ("Luan" em vez do Riot ID).
     "tracked_players": [("label", "TEXT")],
+    # X9 v2: cronômetro da partida (fim → placar → fofoca), fofoca guardada
+    # para não pagar o LLM de novo numa nova tentativa, e formato usado.
+    "bot_announcements": [
+        ("ended_raw", "BIGINT"), ("posted_raw", "BIGINT"),
+        ("gossip_text", "TEXT"), ("voice_text", "TEXT"), ("gossip_format", "TEXT"),
+        ("gossip_tries", "INTEGER DEFAULT 0"),
+    ],
 }
 
 
@@ -477,6 +506,12 @@ def get_config(key):
         return r[0] if r else None
     finally:
         conn.close()
+
+
+def config_items(prefix):
+    """{chave: valor} das configs que começam com `prefix`."""
+    return {r["key"]: r["value"] for r in _query(
+        "SELECT key, value FROM app_config WHERE key LIKE ?", (prefix + "%",))}
 
 
 # ---------------------------------------------------------------------------
@@ -1131,6 +1166,9 @@ def purge_puuid(puuid):
         counts["tracked_players"] = cur.rowcount
         cur.execute(f"DELETE FROM discord_links WHERE puuid = {ph}", (puuid,))
         counts["discord_links"] = cur.rowcount
+        for table in ("bot_lore", "bot_mvp_votes"):
+            cur.execute(f"DELETE FROM {table} WHERE puuid = {ph}", (puuid,))
+            counts[table] = cur.rowcount
         conn.commit()
         return counts
     finally:
@@ -1375,7 +1413,9 @@ def release_announcement(match_id):
         conn.close()
 
 
-_ANN_FIELDS = {"channel_id", "message_id", "thread_id", "gossip_raw", "voice_raw"}
+_ANN_FIELDS = {"channel_id", "message_id", "thread_id", "gossip_raw", "voice_raw",
+               "ended_raw", "posted_raw", "gossip_text", "voice_text", "gossip_format",
+               "gossip_tries"}
 
 
 def update_announcement(match_id, **fields):
@@ -1400,12 +1440,198 @@ def get_announcement(match_id):
     return rows[0] if rows else None
 
 
-def announcements_pending_gossip(since_raw):
+# Fofoca "em andamento" fica marcada com gossip_raw = -timestamp. Se o bot cair
+# no meio, depois disto ela volta a ser pendente.
+GOSSIP_STALE_S = 600
+
+
+def announcements_pending_gossip(since_raw, now=None):
     """Anúncios já postados (têm mensagem) que ainda não ganharam a fofoca."""
+    now = int(now or time.time())
     return _query("SELECT a.*, m.started_raw FROM bot_announcements a "
                   "JOIN matches m ON m.match_id = a.match_id "
-                  "WHERE a.gossip_raw IS NULL AND a.message_id IS NOT NULL "
-                  "AND a.claimed_raw >= ? ORDER BY m.started_raw", (since_raw,))
+                  "WHERE (a.gossip_raw IS NULL OR (a.gossip_raw < 0 AND a.gossip_raw > ?)) "
+                  "AND a.message_id IS NOT NULL "
+                  "AND a.claimed_raw >= ? ORDER BY m.started_raw",
+                  (-(now - GOSSIP_STALE_S), since_raw))
+
+
+def _execute(sql, params=()):
+    """Escrita avulsa; devolve o rowcount."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql if _is_sqlite(conn) else sql.replace("?", "%s"), params)
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def claim_gossip(match_id, now=None):
+    """Marca a fofoca como "em andamento". True = este processo é o dono.
+
+    Ao-vivo, tick e uma eventual 2ª instância do bot podem enxergar o mesmo
+    anúncio pendente ao mesmo tempo; só quem vira o NULL (ou um claim velho)
+    escreve a fofoca."""
+    now = int(now or time.time())
+    return _execute("UPDATE bot_announcements SET gossip_raw = ? WHERE match_id = ? "
+                    "AND (gossip_raw IS NULL OR (gossip_raw < 0 AND gossip_raw > ?))",
+                    (-now, match_id, -(now - GOSSIP_STALE_S))) == 1
+
+
+def release_gossip(match_id, text=None, voice=None, fmt=None):
+    """Devolve a fofoca para a fila depois de uma falha (conta a tentativa e
+    guarda o texto já gerado, para a próxima tentativa não pagar o LLM)."""
+    _execute("UPDATE bot_announcements SET gossip_raw = NULL, "
+             "gossip_tries = COALESCE(gossip_tries, 0) + 1, "
+             "gossip_text = COALESCE(?, gossip_text), voice_text = COALESCE(?, voice_text), "
+             "gossip_format = COALESCE(?, gossip_format) WHERE match_id = ?",
+             (text, voice, fmt, match_id))
+
+
+def recent_gossips(limit=15):
+    """Últimas fofocas publicadas (texto e formato), mais novas primeiro."""
+    return _query("SELECT match_id, gossip_text, gossip_format FROM bot_announcements "
+                  "WHERE gossip_text IS NOT NULL AND gossip_raw > 0 "
+                  "ORDER BY gossip_raw DESC LIMIT ?", (limit,))
+
+
+def announcement_timings(limit=20):
+    """Cronômetro das últimas partidas anunciadas: fim → placar → fofoca."""
+    return _query("SELECT match_id, claimed_by, ended_raw, posted_raw, gossip_raw "
+                  "FROM bot_announcements WHERE ended_raw IS NOT NULL "
+                  "ORDER BY claimed_raw DESC LIMIT ?", (limit,))
+
+
+def announcements_for_matches(match_ids):
+    ids = list(match_ids)
+    if not ids:
+        return {}
+    marks = ",".join("?" for _ in ids)
+    return {r["match_id"]: r for r in _query(
+        f"SELECT * FROM bot_announcements WHERE match_id IN ({marks})", tuple(ids))}
+
+
+# --- lore (memória longa do X9) ---------------------------------------------
+def add_lore(key, puuid, kind, text, expires_raw, now=None):
+    """Grava (ou renova) um item de lore. A chave evita duplicata."""
+    conn = get_connection()
+    try:
+        _upsert(conn, "bot_lore", ["lore_key", "puuid", "kind", "text", "created_raw",
+                                   "expires_raw"], ["lore_key"],
+                (key, puuid, kind, text, int(now or time.time()), int(expires_raw)),
+                update=True)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def active_lore(now=None, limit=40):
+    return _query("SELECT * FROM bot_lore WHERE expires_raw > ? "
+                  "ORDER BY created_raw DESC LIMIT ?", (int(now or time.time()), limit))
+
+
+def delete_lore(lore_id=None):
+    """Apaga um item (id) ou, sem id, toda a lore."""
+    if lore_id is None:
+        return _execute("DELETE FROM bot_lore")
+    return _execute("DELETE FROM bot_lore WHERE id = ?", (int(lore_id),))
+
+
+# --- apostas ------------------------------------------------------------------
+def place_bet(discord_id, pick, now=None):
+    """Uma aposta aberta por pessoa: a nova substitui a anterior."""
+    now = int(now or time.time())
+    _execute("DELETE FROM bot_bets WHERE discord_id = ? AND match_id IS NULL",
+             (str(discord_id),))
+    _execute("INSERT INTO bot_bets (discord_id, pick, created_raw) VALUES (?, ?, ?)",
+             (str(discord_id), pick, now))
+
+
+def open_bets():
+    return _query("SELECT * FROM bot_bets WHERE match_id IS NULL ORDER BY created_raw")
+
+
+def settle_bets(match_id, started_raw, won, now=None):
+    """Liquida as apostas feitas antes do início da partida. Devolve as liquidadas."""
+    now = int(now or time.time())
+    out = []
+    for b in open_bets():
+        if started_raw and (b["created_raw"] or 0) >= started_raw:
+            continue  # apostou com a partida já rolando: vale para a próxima
+        hit = 1 if (b["pick"] == "vitoria") == bool(won) else 0
+        if _execute("UPDATE bot_bets SET match_id = ?, hit = ?, settled_raw = ? "
+                    "WHERE id = ? AND match_id IS NULL", (match_id, hit, now, b["id"])) == 1:
+            out.append({**b, "match_id": match_id, "hit": hit})
+    return out
+
+
+def bet_ranking():
+    return _query("SELECT discord_id, COUNT(*) AS total, SUM(hit) AS acertos FROM bot_bets "
+                  "WHERE match_id IS NOT NULL GROUP BY discord_id "
+                  "ORDER BY SUM(hit) DESC, COUNT(*) ASC")
+
+
+# --- votação de MVP -----------------------------------------------------------
+def cast_mvp_vote(match_id, voter, puuid, now=None):
+    conn = get_connection()
+    try:
+        _upsert(conn, "bot_mvp_votes", ["match_id", "voter", "puuid", "voted_raw"],
+                ["match_id", "voter"], (match_id, str(voter), puuid, int(now or time.time())),
+                update=True)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mvp_votes(match_id):
+    """puuid -> votos."""
+    return {r["puuid"]: r["n"] for r in _query(
+        "SELECT puuid, COUNT(*) AS n FROM bot_mvp_votes WHERE match_id = ? GROUP BY puuid",
+        (match_id,))}
+
+
+# --- rank por partida e janelas de tempo ---------------------------------------
+def rank_rows_for_match(match_id):
+    """Linhas do mmr-history desta partida (RR ganho/perdido e o tier depois)."""
+    return _query("SELECT * FROM rank_history WHERE match_id = ?", (match_id,))
+
+
+def previous_rank_row(puuid, before_raw):
+    rows = _query("SELECT * FROM rank_history WHERE puuid = ? AND date_raw < ? "
+                  "ORDER BY date_raw DESC LIMIT 1", (puuid, before_raw))
+    return rows[0] if rows else None
+
+
+def rank_rows_since(puuids, since_raw):
+    if not puuids:
+        return []
+    marks = ",".join("?" for _ in puuids)
+    return _query(f"SELECT * FROM rank_history WHERE puuid IN ({marks}) AND date_raw >= ? "
+                  f"ORDER BY date_raw", (*puuids, since_raw))
+
+
+def rank_profiles(puuids):
+    if not puuids:
+        return {}
+    marks = ",".join("?" for _ in puuids)
+    return {r["puuid"]: r for r in _query(
+        f"SELECT * FROM rank_profile WHERE puuid IN ({marks})", tuple(puuids))}
+
+
+def derived_for_puuids(puuids, since_raw=None):
+    """Linhas derivadas (com started_raw) de vários jogadores, mais novas primeiro."""
+    if not puuids:
+        return []
+    marks = ",".join("?" for _ in puuids)
+    extra, params = "", list(puuids)
+    if since_raw is not None:
+        extra = " AND m.started_raw >= ?"
+        params.append(since_raw)
+    return _query(f"SELECT d.*, m.started_raw FROM player_match_derived d "
+                  f"JOIN matches m ON m.match_id = d.match_id WHERE d.puuid IN ({marks}){extra} "
+                  f"ORDER BY m.started_raw DESC", tuple(params))
 
 
 def unannounced_group_matches(puuids, since_raw):

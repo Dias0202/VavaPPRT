@@ -58,13 +58,22 @@ def main(argv=None):
         result = backfill_all(pages=n or 3)
         print(f"BACKFILL: {result['players']} usuários, {result['backfilled']} partidas-resumo.")
     else:
-        result = ingest_all()
-        print(f"OK: {result['players']} jogadores, {result['new_matches']} partidas novas, "
+        # O placar sai logo depois da ingestão (antes do MMR e do deep backfill)
+        # e é reescrito com o RR quando ele chega.
+        posted = []
+        hooks = {}
+        if config.DISCORD_WEBHOOK_URL:
+            hooks = {"on_new": lambda: announce.run(posted_ids=posted),
+                     "after_rank": lambda: announce.refresh_rr(posted)}
+        result = ingest_all(**hooks)
+        print(f"OK: {result['players']} jogadores ({result.get('skipped', 0)} pulados), "
+              f"{result['new_matches']} partidas novas, "
               f"{result.get('deep_upgraded', 0)} re-hidratadas.")
         if config.DISCORD_WEBHOOK_URL:
-            # Anúncio é bônus: Discord fora do ar não pode deixar o poller vermelho.
+            # Rede de segurança: o que ficou pendente (webhook fora do ar antes,
+            # partida que entrou pelo site). Bônus: não deixa o poller vermelho.
             try:
-                n_ann = announce.run()
+                n_ann = len(posted) + announce.run()
                 print(f"DISCORD: {n_ann} partida(s) anunciada(s).")
             except Exception as e:
                 print(f"  aviso: anúncio no Discord falhou: {e}")
@@ -72,7 +81,8 @@ def main(argv=None):
         for e in errs:
             print(f"  aviso: {e}")
         # Todo jogador falhou = API fora / chave inválida: o job precisa ficar vermelho.
-        if result["players"] and len(errs) >= result["players"] and not result["new_matches"]:
+        if result["players"] and len([e for e in errs if "#" in e]) >= result["players"] \
+                and not result["new_matches"]:
             _fail("nenhum jogador pôde ser ingerido nesta execução.")
 
 

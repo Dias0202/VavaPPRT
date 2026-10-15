@@ -65,7 +65,7 @@ TABLES = ["users", "tracked_players", "app_config", "matches", "match_players",
           "player_match_derived", "player_round_stats", "kills", "spatial_events",
           "rank_history", "rank_profile", "rank_season", "player_goals",
           "ingest_runs", "ingest_state", "cache_telemetry", "discord_links",
-          "bot_announcements"]
+          "bot_announcements", "bot_lore", "bot_bets", "bot_mvp_votes"]
 
 
 @pytest.fixture()
@@ -80,6 +80,9 @@ def clean_db():
         conn.commit()
     finally:
         conn.close()
+    # O cache em memória da botapi sobrevive entre testes (é de módulo).
+    from app import botapi
+    botapi.invalidate_cache()
     yield db
 
 
@@ -106,9 +109,11 @@ class FakeHenrik:
             return {"error": "not_found", "status": 404}
         return {"data": {"puuid": pu, "region": "na", "name": name, "tag": tag}}
 
-    def fetch_matches_v4(self, name, tag, region=None, platform="pc", mode=None):
+    def fetch_matches_v4(self, name, tag, region=None, platform="pc", mode=None, size=None):
         self.calls.append("v4")
-        return {"data": self._player_matches(name, tag)}
+        ms = sorted(self._player_matches(name, tag),
+                    key=lambda m: m["metadata"]["started_at"], reverse=True)
+        return {"data": ms[:size] if size else ms}
 
     def fetch_match_v4(self, match_id, region=None):
         self.calls.append("match")
