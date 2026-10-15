@@ -7,6 +7,27 @@
 
 ---
 
+## 0. Status da execução (2026-10-15)
+
+| Fase | Status | Onde |
+|---|---|---|
+| 0. Medir e consertar | ✅ cronômetro por resposta/voz/partida, `/x9 status`, B1 (trava + `claim_gossip`), B2 (retentativa guardando o texto, desiste em 3), B3, B4 (aviso de cota), B5 (cache), B6 | `bot/x9/telemetry.py`, `announcer.py`, `backend/app/db.py` |
+| 1. Partida sem atraso | ✅ 1.1 a 1.8 | `bot/x9/live.py`, `announcer.py`, `backend/app/ingest.py`, `announce.py`, `poll.py` |
+| 2. Resposta em 1–3 s | ✅ 2.1 a 2.7 (catálogo do LLM com 8 tools agrupadas) | `backend/app/botapi.py`, `bot/x9/llm.py`, `brain.py`, `streaming.py`, `discord_bot.py` |
+| 3. Voz instantânea | ✅ 3.1 a 3.4 e 3.6; 3.5 é só configuração (`WHISPER_MODEL=large-v3-turbo`, `WHISPER_COMPUTE=int8_float16`) | `bot/x9/voice.py`, `stt.py` |
+| 4. Insights | ✅ 4.1 a 4.4 | `backend/app/storylines.py`, `botapi.py`, `bot/x9/moments.py` |
+| 5. Criatividade | ✅ 5.1 a 5.6; ❌ 5.7 (card de placar em imagem, opcional) ficou de fora | `bot/x9/brain.py`, `announcer.py`, `discord_bot.py` |
+| 6. Infraestrutura | ⏸️ decisão sua (conta na Oracle, pedido de chave à HenrikDev, migração do banco). Com chave maior, baixe `LIVE_MIN_GAP_S`. A 6.4 (cliente da Riot) não foi feita por ser API não oficial | — |
+
+**Validado aqui**: suítes do backend (70) e do bot (100) verdes em SQLite **e**
+Postgres 16, com testes novos para cada item acima. **Não validado aqui** (sem
+as chaves no container): chamadas reais ao Discord, Gemini, Groq e HenrikDev,
+Whisper e TTS. O streaming foi testado contra respostas simuladas no formato
+documentado de cada provedor. Na primeira subida, confira `/x9 status` e o
+`x9.log`.
+
+---
+
 ## 1. Resumo
 
 O X9 funciona, mas tudo nele acontece **em fila e às cegas**. Três causas
