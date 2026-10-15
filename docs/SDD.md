@@ -185,7 +185,7 @@ Auth por `Authorization: Bearer <jwt>`. CORS restrito às origens do frontend.
 - **Backend:** Render Web Service (oregon), root `backend`, start `uvicorn app.main:app`.
 - **Frontend:** GitHub Pages via `pages.yml`, só depois do CI verde.
 - **Banco:** Supabase Postgres, papel `vavapprt_app`, schema privado `vavapprt`.
-- **Poller:** `poll.yml` disparado a cada 15 min pelo `pg_cron` do Supabase
+- **Poller:** `poll.yml` disparado a cada 5 min pelo `pg_cron` do Supabase
   (`workflow_dispatch`), cron do GitHub como reserva, keepalive no próprio run.
 - **CI:** `ci.yml` — pytest em SQLite e Postgres + build do frontend.
 - Segredos via env/secrets; `.env` nunca commitado. Detalhes em

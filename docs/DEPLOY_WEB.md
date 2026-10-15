@@ -6,7 +6,7 @@
        ▼
   Frontend React ──► Backend FastAPI ──► Supabase Postgres (schema `vavapprt`)
   (GitHub Pages)     (Render free)              ▲          │
-                                                │ grava    │ pg_cron a cada 15 min
+                                                │ grava    │ pg_cron a cada 5 min 
                                                 │          ▼
                               Poller (GitHub Actions) ◄── workflow_dispatch
                                                 │
@@ -23,7 +23,7 @@ abrir uma página.
 | Banco | Supabase free | Não expira (o Postgres free do Render expira em 30 dias — foi o que derrubou a produção em set/2026) |
 | API | Render free (`oregon`) | Mesma região do Supabase (`us-west-2`): ~1 ms por query |
 | Site | GitHub Pages | Sem conta extra; publica só com CI verde |
-| Poller | GitHub Actions | Disparado pelo `pg_cron` do Supabase a cada 15 min (o cron do GitHub atrasa horas em repo free) |
+| Poller | GitHub Actions | Disparado pelo `pg_cron` do Supabase a cada 5 min (o cron do GitHub atrasa horas em repo free) |
 
 ---
 
@@ -89,7 +89,7 @@ Ele pede os segredos:
    da API). Sem `DATABASE_URL` o poller **falha** de propósito — antes ele
    gravava num SQLite descartável e ficava verde.
 2. **Variables** (opcionais): `DEFAULT_REGION=na`, `DEEP_PER_RUN=10`.
-3. Gatilho de 15 em 15 min pelo Supabase (o cron do GitHub é só reserva):
+3. Gatilho de 5 em 5 min pelo Supabase (o cron do GitHub é só reserva):
    - crie um **PAT fine-grained** só deste repositório, permissão
      **Actions: Read and write**;
    - no Supabase, extensões `pg_cron` e `pg_net`, e as funções
@@ -97,7 +97,7 @@ Ele pede os segredos:
      (guardam o PAT no Vault e chamam `workflow_dispatch`);
    - grave o token sem colá-lo em SQL de migração:
      `select vavapprt.set_dispatch_token('<PAT>')` numa conexão como `vavapprt_app`;
-   - agende: `select cron.schedule('vavapprt-poller', '*/15 * * * *', $$select vavapprt.dispatch_poller()$$);`
+   - agende: `select cron.schedule('vavapprt-poller', '*/5 * * * *', $$select vavapprt.dispatch_poller()$$);`
 4. **Keepalive**: todo run do poller reativa o próprio workflow
    (`gh workflow enable`), zerando o contador de 60 dias sem commit que o
    GitHub usa para desligar crons.
