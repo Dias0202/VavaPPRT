@@ -83,12 +83,19 @@ def fetch_matches(name, tag, region=None, mode=None):
     return _get(url)
 
 
-def fetch_matches_v4(name, tag, region=None, platform="pc", mode=None):
-    """Histórico recente no schema v4 (canônico — rounds+kills completos)."""
+def fetch_matches_v4(name, tag, region=None, platform="pc", mode=None, size=None):
+    """Histórico recente no schema v4 (canônico — rounds+kills completos).
+
+    size: quantas partidas (as mais novas). O ao-vivo do bot pede poucas: o
+    padrão traz várias partidas completas, um payload grande para detectar
+    só a última."""
     region = region or config.DEFAULT_REGION
     url = f"{HENRIK_BASE}/v4/matches/{region}/{platform}/{name}/{tag}"
-    if mode:
-        url += f"?mode={mode}"
+    params = [f"mode={mode}"] if mode else []
+    if size:
+        params.append(f"size={int(size)}")
+    if params:
+        url += "?" + "&".join(params)
     return _get(url)
 
 

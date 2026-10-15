@@ -47,6 +47,8 @@ jobs:
           HENRIKDEV_API_KEY: ${{ secrets.HENRIKDEV_API_KEY }}
           DEFAULT_REGION: ${{ vars.DEFAULT_REGION || 'na' }}
           DEEP_PER_RUN: ${{ vars.DEEP_PER_RUN || '10' }}
+          # Pula quem o ao-vivo do bot X9 checou há menos de 4 min (cota dividida).
+          POLL_SKIP_RECENT_S: ${{ vars.POLL_SKIP_RECENT_S || '240' }}
           # Bot X9: placar de cada partida nova no Discord (vazio = não anuncia).
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           SITE_URL: ${{ vars.SITE_URL }}

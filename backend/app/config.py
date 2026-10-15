@@ -41,6 +41,9 @@ CACHE_TTL_MINUTES = int(os.getenv("CACHE_TTL_MINUTES", "10"))
 # Orçamento do poller por execução (Basic Key = 30 req/min).
 DEEP_PER_RUN = int(os.getenv("DEEP_PER_RUN", "10"))       # partidas re-hidratadas
 MMR_REFRESH_HOURS = int(os.getenv("MMR_REFRESH_HOURS", "6"))
+# Pula quem foi checado há menos de N s (o ao-vivo do bot X9 já olhou): não
+# divide a cota à toa. 0 desliga.
+POLL_SKIP_RECENT_S = int(os.getenv("POLL_SKIP_RECENT_S", "0") or 0)
 
 
 def admin_riot():

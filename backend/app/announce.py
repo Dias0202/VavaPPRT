@@ -11,7 +11,7 @@ import time
 import requests
 
 from . import config, db
-from .botapi import _Ctx, _Match, _match_brief
+from .botapi import _Ctx, _Match, _match_brief, _raw, _row
 
 logger = logging.getLogger("announce")
 
@@ -28,11 +28,37 @@ def announce_since():
     return int(v)
 
 
+def match_end_raw(match_id):
+    """Quando a partida acabou (início + duração da v4), para o cronômetro."""
+    raw = _raw(match_id) or {}
+    md = raw.get("metadata") or {}
+    start = (_row(match_id) or {}).get("started_raw")
+    length = md.get("game_length_in_ms")
+    if not start:
+        return None
+    return int(start + (length or 0) / 1000)
+
+
+def rank_changes(match_id, ctx):
+    """{nome: {"rr": +18, "tier": "Gold 3", "subiu": True|False|None}} desta partida."""
+    out = {}
+    for r in db.rank_rows_for_match(match_id):
+        name = ctx.label(r["puuid"])
+        if not name:
+            continue
+        prev = db.previous_rank_row(r["puuid"], r.get("date_raw") or 0)
+        moved = None
+        if prev and prev.get("tier") and r.get("tier") and prev["tier"] != r["tier"]:
+            moved = r["tier"] > prev["tier"]
+        out[name] = {"rr": r.get("rr_change"), "tier": r.get("tier_name"), "subiu": moved}
+    return out
+
+
 def build_embed(match_id, ctx=None):
     """Embed do Discord (dict) com o placar da partida do ponto de vista do grupo."""
     ctx = ctx or _Ctx()
     brief = _match_brief(ctx, match_id)
-    raw = db.get_raw_match(match_id)
+    raw = _raw(match_id)
     if raw:
         mv = _Match(raw, ctx)
         o, t = mv.final_score()
@@ -48,12 +74,17 @@ def build_embed(match_id, ctx=None):
 
     fields = []
     friends = brief["amigos"]
+    ranks = rank_changes(match_id, ctx)
     for i, f in enumerate(friends):
         tag = " 👑" if i == 0 and len(friends) > 1 else " 💀" if i == len(friends) - 1 and len(friends) > 1 else ""
-        fields.append({"name": f"{f['nome']}{tag}",
-                       "value": f"{f['agente']} · **{f['kda']}** · ACS {f['acs']} · "
-                                f"ADR {f['adr']} · HS {f['hs_pct']}%",
-                       "inline": False})
+        value = (f"{f['agente']} · **{f['kda']}** · ACS {f['acs']} · "
+                 f"ADR {f['adr']} · HS {f['hs_pct']}%")
+        rk = ranks.get(f["nome"])
+        if rk and rk["rr"] is not None:
+            value += f" · **{rk['rr']:+d} RR**"
+        if rk and rk["subiu"] is not None:
+            value += f" · {'⬆️ subiu pra' if rk['subiu'] else '⬇️ caiu pro'} {rk['tier']}"
+        fields.append({"name": f"{f['nome']}{tag}", "value": value, "inline": False})
     embed = {
         "title": f"{'🟢' if color == GREEN else '🔴' if color == RED else '⚪'} {result} em "
                  f"{brief['mapa'] or '?'} — {score}",
@@ -84,8 +115,29 @@ def post_webhook(url, embed):
     return str(body.get("channel_id")), str(body.get("id"))
 
 
-def run(webhook_url=None, by="poller"):
-    """Anuncia as partidas pendentes. Devolve quantas foram postadas."""
+def _webhook_message_url(url, message_id):
+    base, _, query = url.partition("?")
+    return f"{base.rstrip('/')}/messages/{message_id}" + (f"?{query}" if query else "")
+
+
+def edit_webhook(url, message_id, embed):
+    """Troca o embed de uma mensagem do webhook (ex.: o RR chegou depois)."""
+    try:
+        r = requests.patch(_webhook_message_url(url, message_id), timeout=20,
+                           json={"embeds": [embed]})
+    except requests.RequestException as e:
+        logger.warning("Edição do webhook falhou: %s", e)
+        return False
+    if r.status_code >= 300:
+        logger.warning("Edição do webhook HTTP %s: %s", r.status_code, r.text[:200])
+        return False
+    return True
+
+
+def run(webhook_url=None, by="poller", posted_ids=None):
+    """Anuncia as partidas pendentes. Devolve quantas foram postadas.
+
+    posted_ids: lista opcional que recebe (match_id, message_id) do que saiu."""
     url = webhook_url if webhook_url is not None else config.DISCORD_WEBHOOK_URL
     if not url:
         return 0
@@ -102,8 +154,28 @@ def run(webhook_url=None, by="poller"):
         if not res:
             db.release_announcement(mid)
             break  # webhook fora do ar: tenta tudo de novo na próxima execução
-        db.update_announcement(mid, channel_id=res[0], message_id=res[1])
+        db.update_announcement(mid, channel_id=res[0], message_id=res[1],
+                               ended_raw=match_end_raw(mid), posted_raw=int(time.time()))
+        if posted_ids is not None:
+            posted_ids.append((mid, res[1]))
         posted += 1
     if posted:
         logger.info("Anunciadas %d partida(s) no Discord.", posted)
     return posted
+
+
+def refresh_rr(posted_ids, webhook_url=None):
+    """Depois do MMR, reescreve o placar das partidas recém-postadas com o RR."""
+    url = webhook_url if webhook_url is not None else config.DISCORD_WEBHOOK_URL
+    if not url or not posted_ids:
+        return 0
+    ctx = _Ctx()
+    n = 0
+    for mid, message_id in posted_ids:
+        if not db.rank_rows_for_match(mid):
+            continue
+        try:
+            n += edit_webhook(url, message_id, build_embed(mid, ctx))
+        except Exception:
+            logger.exception("Não consegui pôr o RR no placar de %s", mid[:8])
+    return n

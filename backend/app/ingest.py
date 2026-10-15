@@ -117,18 +117,22 @@ def process_match(match, friend_puuids):
     }
 
 
-def ingest_user(user, friend_puuids, collect=None):
+def ingest_user(user, friend_puuids, collect=None, size=None, retry_429=True):
     """Ingere partidas v4 recentes de um usuário. Retorna nº de partidas novas.
 
     collect: lista opcional que recebe os match_ids gravados (o bot X9 usa para
-    anunciar na hora o que acabou de baixar)."""
+    anunciar na hora o que acabou de baixar).
+    size: quantas partidas pedir (o ao-vivo pede poucas; None = padrão da API).
+    retry_429: espera a janela virar e tenta 1x; o ao-vivo prefere desistir e
+    tentar no próximo ciclo a travar 30 s."""
     name, tag = user["riot_id"], user["tagline"]
     region = user.get("region") or None
-    data = api.fetch_matches_v4(name, tag, region=region)
-    if isinstance(data, dict) and data.get("status") == 429:
+    kw = {"size": size} if size else {}
+    data = api.fetch_matches_v4(name, tag, region=region, **kw)
+    if isinstance(data, dict) and data.get("status") == 429 and retry_429:
         # Estourou a janela de 30 req/min: espera a janela virar e tenta 1x.
         time.sleep(30)
-        data = api.fetch_matches_v4(name, tag, region=region)
+        data = api.fetch_matches_v4(name, tag, region=region, **kw)
     puuid = user.get("puuid")
     if isinstance(data, dict) and data.get("error"):
         logger.warning("Falha v4 %s#%s: %s", name, tag, data.get("error"))
@@ -494,14 +498,45 @@ def _mmr_due(puuid, had_new):
     return time.time() - last > config.MMR_REFRESH_HOURS * 3600
 
 
-def ingest_all(deep_budget=None):
-    """Execução do poller: partidas novas de todos + RR + deep backfill em rodízio."""
+def _refresh_mmr(u, errors):
+    ok = True
+    for fn, nome in ((ingest_rank_history, "rank history"), (ingest_mmr_profile, "mmr")):
+        try:
+            fn(u)
+        except Exception as e:
+            ok = False
+            logger.warning("Erro %s %s#%s: %s", nome, u["riot_id"], u["tagline"], e)
+            errors.append(f"{u['riot_id']}#{u['tagline']}: {nome} {e}")
+    if ok:
+        db.update_ingest_state(u["puuid"], last_mmr_raw=int(time.time()))
+    return ok
+
+
+def _hook(fn, what, errors):
+    if not fn:
+        return
+    try:
+        fn()
+    except Exception as e:  # anúncio é bônus: não pode derrubar a ingestão
+        logger.warning("Hook %s falhou: %s", what, e, exc_info=True)
+        errors.append(f"{what}: {e}")
+
+
+def ingest_all(deep_budget=None, on_new=None, after_rank=None, skip_recent_s=None):
+    """Execução do poller, em fases, para o placar sair o quanto antes:
+
+    1. partidas novas de todos  → `on_new()` (o anúncio sai AQUI)
+    2. RR/MMR de quem precisa   → `after_rank()` (o placar ganha o RR)
+    3. deep backfill em rodízio (o mais lento fica por último)
+
+    skip_recent_s: pula quem foi checado há menos disso (o ao-vivo do bot)."""
     deep_budget = config.DEEP_PER_RUN if deep_budget is None else deep_budget
+    skip_recent_s = config.POLL_SKIP_RECENT_S if skip_recent_s is None else skip_recent_s
     api.reset_stats()
     run_id = db.start_ingest_run("poll")
     roster = db.get_roster()
     errors = []
-    total_new = 0
+    total_new = skipped = 0
     deep = {"upgraded": 0, "failed": 0, "rate_limited": False}
     try:
         if not roster:
@@ -509,27 +544,34 @@ def ingest_all(deep_budget=None):
             return {"players": 0, "new_matches": 0, "deep_upgraded": 0}
 
         friend_puuids = {u["puuid"] for u in roster if u.get("puuid")}
+        states = db.all_ingest_state() if skip_recent_s else {}
+        now = time.time()
+        new_by = {}
         for u in roster:
-            new = 0
+            st = states.get(u.get("puuid")) or {}
+            if skip_recent_s and (st.get("last_ingested_raw") or 0) > now - skip_recent_s \
+                    and not st.get("last_error"):
+                skipped += 1
+                continue
             try:
-                new = ingest_user(u, friend_puuids)
-                total_new += new
+                new_by[u.get("puuid")] = ingest_user(u, friend_puuids)
+                total_new += new_by[u.get("puuid")]
             except IngestError as e:
                 errors.append(str(e))
             except Exception as e:
                 logger.warning("Erro ao ingerir %s#%s: %s", u["riot_id"], u["tagline"], e, exc_info=True)
                 errors.append(f"{u['riot_id']}#{u['tagline']}: {e}")
-            if u.get("puuid") and _mmr_due(u["puuid"], new):
-                ok = True
-                for fn, nome in ((ingest_rank_history, "rank history"), (ingest_mmr_profile, "mmr")):
-                    try:
-                        fn(u)
-                    except Exception as e:
-                        ok = False
-                        logger.warning("Erro %s %s#%s: %s", nome, u["riot_id"], u["tagline"], e)
-                        errors.append(f"{u['riot_id']}#{u['tagline']}: {nome} {e}")
-                if ok:
-                    db.update_ingest_state(u["puuid"], last_mmr_raw=int(time.time()))
+
+        if total_new:
+            _hook(on_new, "anúncio", errors)
+
+        refreshed_new = False
+        for u in roster:
+            if u.get("puuid") and _mmr_due(u["puuid"], new_by.get(u["puuid"], 0)):
+                if _refresh_mmr(u, errors) and new_by.get(u["puuid"]):
+                    refreshed_new = True
+        if refreshed_new:
+            _hook(after_rank, "RR no placar", errors)
 
         try:
             deep = deep_rotation(roster, friend_puuids, deep_budget)
@@ -537,9 +579,10 @@ def ingest_all(deep_budget=None):
             logger.warning("Erro no deep backfill: %s", e, exc_info=True)
             errors.append(f"deep: {e}")
 
-        logger.info("Ingestão: %d jogadores, %d partidas novas, %d re-hidratadas, %d chamadas.",
-                    len(roster), total_new, deep["upgraded"], api.stats["calls"])
-        return {"players": len(roster), "new_matches": total_new,
+        logger.info("Ingestão: %d jogadores (%d pulados), %d partidas novas, %d re-hidratadas, "
+                    "%d chamadas.", len(roster), skipped, total_new, deep["upgraded"],
+                    api.stats["calls"])
+        return {"players": len(roster) - skipped, "skipped": skipped, "new_matches": total_new,
                 "deep_upgraded": deep["upgraded"], "errors": errors}
     finally:
         # Erro de um jogador não derruba a execução; só "falha" se nada andou.
