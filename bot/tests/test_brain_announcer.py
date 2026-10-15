@@ -1,11 +1,12 @@
 """Cérebro (memória, foco, persona) e loop do dedo-duro, contra o banco de teste."""
+import asyncio
 import time
 
 import pytest
 
 from conftest import ADMIN_DISCORD
 from x9.announcer import Announcer
-from x9.brain import Brain, BrainUnavailable, focus_from_trail, split_message
+from x9.brain import Brain, BrainUnavailable, Gossip, focus_from_trail, split_message
 from x9.llm import LLMError, LLMResponse
 
 
@@ -133,21 +134,24 @@ class FakePoster:
 
 
 class FakeBrain:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, delay=0, hooks=()):
         self.fail, self.gossiped, self.digests = fail, [], []
+        self.delay, self.hooks = delay, list(hooks)
 
-    async def gossip(self, mid):
+    async def gossip(self, mid, mode="zoeira"):
         if self.fail:
             raise BrainUnavailable("x")
+        if self.delay:
+            await asyncio.sleep(self.delay)
         self.gossiped.append(mid)
-        return f"fofoca {mid[-1]}"
+        return Gossip(f"fofoca {mid[-1]}", f"voz {mid[-1]}", "plantao", self.hooks)
 
-    async def gossip_digest(self, mids):
+    async def gossip_digest(self, mids, mode="zoeira"):
         self.digests.append(mids)
-        return "resumo"
+        return Gossip("resumo", "voz do resumo", "digest")
 
-    async def voice_line(self, mid):
-        return f"voz {mid[-1]}"
+    async def prewarm(self):
+        pass
 
 
 def _announcer(backend, brain, poster, **kw):
@@ -189,10 +193,11 @@ async def test_fofoca_na_thread_e_voz(backend):
     ann = _announcer(backend, brain, poster)
     assert await ann.gossip_pending() == 2
     assert [t[1] for t in poster.threads] == ["901", "900"] or [t[1] for t in poster.threads] == ["900", "901"]
-    assert len(poster.spoken) == 2
+    assert sorted(poster.spoken) == sorted(f"voz {m[-1]}" for m in mids)  # a mesma geração
     for mid in mids:
         a = db.get_announcement(mid)
         assert a["gossip_raw"] and a["voice_raw"] and a["thread_id"] == a["message_id"]
+        assert a["gossip_text"] == f"fofoca {mid[-1]}" and a["gossip_format"] == "plantao"
     assert await ann.gossip_pending() == 0  # não repete
 
 
