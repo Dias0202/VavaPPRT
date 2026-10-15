@@ -16,6 +16,7 @@ a inviabilidade da API oficial da Riot para projetos pessoais — ver
 | **Guia de deploy (grátis)** | [docs/DEPLOY_WEB.md](docs/DEPLOY_WEB.md) |
 | **Plano de análise / catálogo de métricas** | [docs/PLANO_ANALYTICS.md](docs/PLANO_ANALYTICS.md) |
 | **Bot X9 do Discord (SDD + setup)** | [docs/BOT_X9.md](docs/BOT_X9.md) |
+| **X9 v2: diagnóstico e plano de melhoria** | [docs/PLANO_X9_V2.md](docs/PLANO_X9_V2.md) |
 
 ---
 
