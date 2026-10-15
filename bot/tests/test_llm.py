@@ -5,7 +5,8 @@ import httpx
 import pytest
 
 from x9.llm import (FallbackProvider, GeminiProvider, GroqProvider, LLMError, LLMResponse,
-                    gemini_contents, gemini_tools, openai_messages, run_tools_loop)
+                    ProviderHealth, gemini_contents, gemini_tools, openai_messages,
+                    run_tools_loop)
 
 CATALOG = [
     {"name": "ranking_grupo", "description": "ranking", "parameters":
@@ -303,3 +304,151 @@ async def test_castigo_dobra_enquanto_continua_falhando():
     assert len(g.calls) == 2         # ainda de castigo
     t[0] = 61 + 121
     assert (await fb.chat("s", [])).text == "voltei"
+
+
+# ---------------------------------------------------------------------------
+# Streaming (X9 v2)
+# ---------------------------------------------------------------------------
+def _sse_body(events):
+    return "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+
+
+async def _collect(gen):
+    texts, done = [], None
+    async for kind, val in gen:
+        if kind == "text":
+            texts.append(val)
+        else:
+            done = val
+    return texts, done
+
+
+async def test_gemini_em_streaming_junta_texto_e_function_call():
+    seen = {}
+
+    def handler(req):
+        seen["url"] = str(req.url)
+        return httpx.Response(200, text=_sse_body([
+            {"candidates": [{"content": {"parts": [{"text": "pensei", "thought": True}]}}]},
+            {"candidates": [{"content": {"parts": [{"text": "O admin "}]}}]},
+            {"candidates": [{"content": {"parts": [{"text": "carregou."}]}}]},
+            {"candidates": [{"content": {"parts": [
+                {"functionCall": {"name": "ranking_grupo", "args": {}}, "thoughtSignature": "s"}]},
+                "finishReason": "STOP"}]},
+        ]), headers={"content-type": "text/event-stream"})
+
+    p = GeminiProvider("k", "gemini-x", client=_client(handler))
+    texts, done = await _collect(p.chat_stream("s", [{"role": "user", "content": "x"}], CATALOG))
+    assert "streamGenerateContent" in seen["url"] and "alt=sse" in seen["url"]
+    assert texts == ["O admin ", "carregou."] and done.text == "O admin carregou."
+    assert done.tool_calls[0]["name"] == "ranking_grupo"
+    # partes ecoáveis: texto emendado num só, function call com a assinatura
+    assert done.raw["gemini"][0] == {"text": "O admin carregou."}
+    assert done.raw["gemini"][1]["thoughtSignature"] == "s"
+
+
+async def test_groq_em_streaming_monta_tool_call_em_pedacos():
+    def handler(req):
+        assert json.loads(req.content)["stream"] is True
+        return httpx.Response(200, text=_sse_body([
+            {"choices": [{"delta": {"content": "Fala "}}]},
+            {"choices": [{"delta": {"content": "aí."}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "function":
+                                                    {"name": "narrar_", "arguments": '{"rou'}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "function":
+                                                    {"name": "round", "arguments": 'nd": 4}'}}]}}]},
+        ]))
+
+    p = GroqProvider("g", "m", client=_client(handler))
+    texts, done = await _collect(p.chat_stream("s", [{"role": "user", "content": "x"}], CATALOG))
+    assert "".join(texts) == "Fala aí."
+    assert done.tool_calls == [{"id": "t1", "name": "narrar_round", "args": {"round": 4}}]
+
+
+async def test_streaming_429_vira_llmerror_com_espera():
+    p = GroqProvider("g", "m", client=_client(lambda req: httpx.Response(
+        429, text="Please try again in 2.5s.")))
+    with pytest.raises(LLMError) as e:
+        await _collect(p.chat_stream("s", []))
+    assert e.value.retry_after == 2.5
+
+
+async def test_fallback_em_streaming_troca_antes_do_primeiro_texto():
+    bad = GroqProvider("g", "m", client=_client(lambda req: httpx.Response(500, text="x")),
+                       name="ruim")
+    def good_handler(req):
+        if json.loads(req.content).get("stream"):
+            return httpx.Response(200, text=_sse_body([{"choices": [{"delta": {"content": "ok"}}]}]))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    good = GroqProvider("g", "m", client=_client(good_handler), name="bom")
+    health = ProviderHealth()
+    fb = FallbackProvider([bad, good], health=health)
+    texts, done = await _collect(fb.chat_stream("s", []))
+    assert texts == ["ok"] and done.provider == "bom"
+    # o castigo vale para outra rota que compartilha a saúde
+    other = FallbackProvider([bad, good], health=health)
+    assert not health.ready(bad) and (await other.chat("s", [])).provider == "bom"
+    st = {x["provedor"]: x for x in fb.status()}
+    assert st["ruim"]["ok"] is False and st["bom"]["ok"] is True
+
+
+async def test_aviso_de_espera_da_cota():
+    from x9.llm import WAIT_NOTICE
+    n = []
+
+    def handler(req):
+        n.append(1)
+        if len(n) == 1:
+            return httpx.Response(429, text="Please try again in 3s.")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    avisos = []
+
+    async def notice(s):
+        avisos.append(s)
+
+    async def no_sleep(s):
+        pass
+
+    token = WAIT_NOTICE.set(notice)
+    try:
+        fb = FallbackProvider([GroqProvider("g", "m", client=_client(handler))], sleep=no_sleep)
+        assert (await fb.chat("s", [])).text == "ok"
+    finally:
+        WAIT_NOTICE.reset(token)
+    assert avisos == [3.0]
+
+
+async def test_loop_com_streaming_e_cronometro():
+    class Streamer:
+        name = "s"
+
+        def __init__(self):
+            self.n = 0
+
+        async def chat_stream(self, system, messages, tools=None, temperature=0.9):
+            self.n += 1
+            if self.n == 1:
+                yield ("text", "Vou ver.")
+                yield ("done", LLMResponse(text="Vou ver.", provider="s", tool_calls=[
+                    {"id": "1", "name": "ranking_grupo", "args": {}}]))
+            else:
+                yield ("text", "Admin ")
+                yield ("text", "lidera.")
+                yield ("done", LLMResponse(text="Admin lidera.", provider="s"))
+
+    got = []
+
+    async def on_text(t, step):
+        got.append((step, t))
+
+    async def executor(name, args):
+        return {"ok": 1}
+
+    stats = {}
+    text, trail = await run_tools_loop(Streamer(), "s", [], CATALOG, executor, on_text=on_text,
+                                       stats=stats)
+    assert text == "Admin lidera." and [t[0] for t in trail] == ["ranking_grupo"]
+    assert got == [(0, "Vou ver."), (1, "Admin "), (1, "lidera.")]
+    assert stats["steps"] == 2 and stats["tools"] == ["ranking_grupo"] and stats["provider"] == "s"

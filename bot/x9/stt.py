@@ -34,8 +34,8 @@ def register_cuda_dlls():
 
 
 class Transcriber:
-    def __init__(self, model="small", device="auto"):
-        self.model_name, self.device = model, device
+    def __init__(self, model="small", device="auto", compute=None):
+        self.model_name, self.device, self.compute = model, device, compute
         self._model = None
         self._lock = threading.Lock()
 
@@ -44,7 +44,8 @@ class Transcriber:
 
         if device == "cuda":
             register_cuda_dlls()
-        compute = "float16" if device == "cuda" else "int8"
+        compute = (self.compute if device == "cuda" else None) or \
+            ("float16" if device == "cuda" else "int8")
         logger.info("Carregando Whisper %s (%s/%s)…", self.model_name, device, compute)
         return WhisperModel(self.model_name, device=device, compute_type=compute)
 

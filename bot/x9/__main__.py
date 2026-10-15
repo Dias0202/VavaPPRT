@@ -6,18 +6,40 @@ import sys
 from . import config
 
 
-def build_provider():
-    from .llm import FallbackProvider, GeminiProvider, GroqProvider
+def build_routes():
+    """{rota: FallbackProvider} com a saúde (castigo) compartilhada entre as rotas."""
+    from .llm import FallbackProvider, GeminiProvider, GroqProvider, ProviderHealth
 
-    providers = []
+    pool = {}
     if config.GEMINI_API_KEY:
-        providers.append(GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_MODEL))
+        pool["gemini"] = GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_MODEL)
     if config.GROQ_API_KEY:
-        providers.append(GroqProvider(config.GROQ_API_KEY, config.GROQ_MODEL))
+        pool["groq"] = GroqProvider(config.GROQ_API_KEY, config.GROQ_MODEL)
         if config.GROQ_FALLBACK_MODEL and config.GROQ_FALLBACK_MODEL != config.GROQ_MODEL:
-            providers.append(GroqProvider(config.GROQ_API_KEY, config.GROQ_FALLBACK_MODEL,
-                                          name=f"groq/{config.GROQ_FALLBACK_MODEL.split('/')[-1]}"))
-    return FallbackProvider(providers)
+            pool["groq-small"] = GroqProvider(
+                config.GROQ_API_KEY, config.GROQ_FALLBACK_MODEL,
+                name=f"groq/{config.GROQ_FALLBACK_MODEL.split('/')[-1]}")
+    if not pool:
+        raise ValueError("Nenhum provedor de LLM configurado.")
+    gossip_pool = dict(pool)
+    if "gemini" in pool and config.GEMINI_GOSSIP_THINKING:
+        # mesma chave e mesmo nome (castigo compartilhado), um pouco de "pensar" na fofoca
+        gossip_pool["gemini"] = GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_MODEL,
+                                               thinking_budget=config.GEMINI_GOSSIP_THINKING)
+    health = ProviderHealth()
+
+    def route(order, src):
+        chosen = [src[k] for k in order if k in src]
+        chosen += [p for k, p in src.items() if p not in chosen]  # o resto vira reserva
+        return FallbackProvider(chosen, health=health)
+
+    return {"texto": route(config.LLM_ORDER_TEXT, pool),
+            "voz": route(config.LLM_ORDER_VOICE, pool),
+            "fofoca": route(config.LLM_ORDER_GOSSIP, gossip_pool)}
+
+
+def build_provider():
+    return build_routes()["texto"]
 
 
 def problems():
@@ -38,12 +60,14 @@ def problems():
 
 async def check_llm():
     from .llm import LLMError
-    p = build_provider()
-    try:
-        r = await p.chat("Responda só: ok", [{"role": "user", "content": "ping"}])
-        return f"LLM ok ({r.provider}): {r.text[:40]}"
-    except LLMError as e:
-        return f"LLM FALHOU: {e}"
+    out = []
+    for name, p in build_routes().items():
+        try:
+            r = await p.chat("Responda só: ok", [{"role": "user", "content": "ping"}])
+            out.append(f"LLM {name} ok ({r.provider}): {r.text[:40]}")
+        except LLMError as e:
+            out.append(f"LLM {name} FALHOU: {e}")
+    return "\n".join(out)
 
 
 def setup_logging():
@@ -88,7 +112,9 @@ def main(argv=None):
     from .backend import announce, botapi, db
     from .brain import Brain
     from .discord_bot import X9Bot
+    from .moments import Moments
     from .stt import Transcriber
+    from .telemetry import Telemetry
 
     class Backend:
         pass
@@ -96,17 +122,24 @@ def main(argv=None):
     backend = Backend()
     backend.botapi, backend.db, backend.announce = botapi, db, announce
     db.init_db()
-    live, local_tools = None, {}
+    telemetry = Telemetry()
+    live, local_tools, context = None, {}, []
     if config.LIVE_ENABLED:
         from .live import PLAYING_TOOL_DESC, PLAYING_TOOL_SCHEMA, LiveTracker
         live = LiveTracker(backend, None, base_every=config.LIVE_BASE_EVERY_S,
-                           playing_every=config.LIVE_PLAYING_EVERY_S)
+                           playing_every=config.LIVE_PLAYING_EVERY_S,
+                           min_gap=config.LIVE_MIN_GAP_S, fetch_size=config.LIVE_FETCH_SIZE or None)
         local_tools["quem_ta_jogando"] = (lambda args: live.playing_now(),
                                           PLAYING_TOOL_DESC, PLAYING_TOOL_SCHEMA)
-    brain = Brain(build_provider(), botapi, memory_turns=config.MEMORY_TURNS,
-                  memory_ttl_s=config.MEMORY_TTL_S, local_tools=local_tools)
-    bot = X9Bot(brain, backend, Transcriber(config.WHISPER_MODEL, config.WHISPER_DEVICE),
-                live=live)
+        context.append(live.playing_line)
+    routes = build_routes()
+    brain = Brain(routes["texto"], botapi, memory_turns=config.MEMORY_TURNS,
+                  memory_ttl_s=config.MEMORY_TTL_S, local_tools=local_tools, routes=routes,
+                  context_providers=context, telemetry=telemetry)
+    moments = Moments(store=db) if live else None
+    bot = X9Bot(brain, backend,
+                Transcriber(config.WHISPER_MODEL, config.WHISPER_DEVICE, config.WHISPER_COMPUTE),
+                live=live, moments=moments, telemetry=telemetry)
     bot.run(config.DISCORD_TOKEN, log_handler=None)
 
 

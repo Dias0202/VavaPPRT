@@ -17,6 +17,7 @@ def tracker(backend, clock, **kw):
     async def on_new(ids):
         seen.append(ids)
 
+    kw.setdefault("spawn", lambda coro: coro)  # o "depois" roda junto, para o teste ver
     t = LiveTracker(backend, on_new, clock=lambda: clock[0], **kw)
     t.seen = seen
     t.roster()
@@ -87,7 +88,8 @@ async def test_tick_baixa_partida_nova_e_avisa(backend, henrik):
     henrik.calls.clear()
     got = await t.tick()
     assert got == [mid] and t.seen == [[mid]]
-    assert henrik.calls[0] == "v4" and "mmr" in henrik.calls  # RR atualizado junto
+    # placar primeiro, RR depois (antes o RR atrasava o placar)
+    assert henrik.calls[0] == "v4" and henrik.calls.index("mmr") > 0
     assert backend.db.match_exists(mid)
     assert t.state[ADMIN_PUUID].burst == []
     assert await t.tick() == []                         # nada vencido: não gasta cota
@@ -127,5 +129,7 @@ def test_atividade_do_valorant_no_membro():
                                     SimpleNamespace(name="VALORANT", details="Competitive",
                                                     state="In Match", start=start)])
     assert X9Bot.valorant_activity(m) == {"details": "Competitive", "state": "In Match",
-                                          "start": start.timestamp()}
+                                          "start": start.timestamp(), "party": None}
+    m.activities[1].party = {"id": "p1", "size": [2, 5]}
+    assert X9Bot.valorant_activity(m)["party"] == "p1"
     assert X9Bot.valorant_activity(SimpleNamespace(activities=[])) is None
