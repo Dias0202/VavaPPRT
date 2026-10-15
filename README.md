@@ -28,7 +28,7 @@ a inviabilidade da API oficial da Riot para projetos pessoais — ver
        ▼
   Frontend React (GitHub Pages) ──► Backend FastAPI (Render) ──► Postgres (Supabase)
    SPA "Telemetria"                 serve SÓ do banco                 ▲      │
-                                                                      │      │ pg_cron 15 min
+                                                                      │      │ pg_cron 5 min 
                                                          grava        │      ▼
                                               Poller (GitHub Actions, workflow_dispatch)
                                                                       │

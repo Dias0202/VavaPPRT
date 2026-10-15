@@ -17,7 +17,7 @@
 | 3. Voz instantânea | ✅ 3.1 a 3.4 e 3.6; 3.5 é só configuração (`WHISPER_MODEL=large-v3-turbo`, `WHISPER_COMPUTE=int8_float16`) | `bot/x9/voice.py`, `stt.py` |
 | 4. Insights | ✅ 4.1 a 4.4 | `backend/app/storylines.py`, `botapi.py`, `bot/x9/moments.py` |
 | 5. Criatividade | ✅ 5.1 a 5.6; ❌ 5.7 (card de placar em imagem, opcional) ficou de fora | `bot/x9/brain.py`, `announcer.py`, `discord_bot.py` |
-| 6. Infraestrutura | ⏸️ decisão sua (conta na Oracle, pedido de chave à HenrikDev, migração do banco). Com chave maior, baixe `LIVE_MIN_GAP_S`. A 6.4 (cliente da Riot) não foi feita por ser API não oficial | — |
+| 6. Infraestrutura | ✅ aplicado: migração `x9_v2_bot_tables` no Supabase (como `vavapprt_app`) e `pg_cron` do poller de 15 para **5 min**, com o poller pulando quem o bot checou há < 5,5 min. ⏸️ decisão sua: VM 24/7 (Oracle), chave Advanced da HenrikDev (com ela, baixe `LIVE_MIN_GAP_S`), banco em São Paulo. A 6.4 (cliente da Riot) não foi feita por ser API não oficial | Supabase, `.github/workflows/poll.yml` |
 
 **Validado aqui**: suítes do backend (70) e do bot (100) verdes em SQLite **e**
 Postgres 16, com testes novos para cada item acima. **Não validado aqui** (sem
@@ -82,7 +82,7 @@ fim da partida
   ▼ voz na call
 ```
 
-Com o PC desligado, a ordem é: pg_cron (15 min) → o GitHub Actions sobe
+Com o PC desligado, a ordem era: pg_cron (15 min; agora 5) → o GitHub Actions sobe
 (≈1 min) → ingestão de todos → MMR → **deep backfill de 10 partidas (≈25 s+)**
 → só então `announce.run()`. A fofoca só sai quando o PC liga.
 

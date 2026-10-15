@@ -52,7 +52,7 @@ específicos**. Fala e escuta em **pt-br**, por texto e por voz, e roda inteiro 
                      └───────▲───────────────────────▲──────────────────────▲──────────────┘
                              │ grava                 │ lê / grava           │ lê
    GitHub Actions ───────────┤                       │                      │
-   poller (15 min)           │                       │                      │
+   poller (5 min)            │                       │                      │
      ingest_all()            │              ┌────────┴─────────┐   ┌────────┴────────┐
      announce.run() ──► webhook do Discord   │  bot X9 (PC)     │   │ FastAPI (Render)│
                         (embed placar)       │  import botapi   │   │ /bot/v1/tools   │
@@ -101,7 +101,7 @@ para não despejar o histórico inteiro no canal.
 ### 2.1b Tempo (quase) real — `x9/live.py`
 
 Nem a Riot nem a HenrikDev expõem a partida **ao vivo**: ela só existe depois
-que acaba. O X9 encurta a espera de até 15 min (poller) para **segundos depois de
+que acaba. O X9 encurta a espera de até 5 min (poller) para **segundos depois de
 a HenrikDev publicá-la** (ela demora de 1 a 3 min):
 
 | Situação | O que o bot faz |
@@ -117,7 +117,7 @@ completas, e um 429 não trava o loop: desiste e tenta no ciclo seguinte.
 Orçamento: no máximo 1 consulta a cada 5 s (`LIVE_MIN_GAP_S`), dos 30 req/min
 que a chave permite, dividida com o poller. O poller do GitHub continua rodando
 (é ele que anuncia com o PC desligado) e pula quem o bot checou há menos de
-4 min (`POLL_SKIP_RECENT_S`).
+5,5 min (`POLL_SKIP_RECENT_S`): com o bot ligado, ele não divide a cota.
 
 Precisa, no Developer Portal, de **Presence Intent** e **Server Members
 Intent**. A presença só aparece para quem compartilha a atividade no Discord
@@ -339,7 +339,7 @@ PROACTIVE_PREFILA=1 · PROACTIVE_NIGHT=1 · PROACTIVE_OSCAR=1
 ```
 
 **Poller (GitHub Actions)**: `POLL_SKIP_RECENT_S` (variável do repositório,
-padrão 240 no workflow) pula quem o ao-vivo do bot checou há pouco.
+padrão 330 no workflow) pula quem o ao-vivo do bot checou há pouco.
 
 No Developer Portal, ligar o intent **Message Content**. No convite, usar os
 escopos `bot applications.commands` com as permissões: ver canais, enviar
