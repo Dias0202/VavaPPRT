@@ -6,6 +6,7 @@ garante que poller e bot nunca postem a mesma partida duas vezes; o bot depois
 responde na thread dessa mensagem com a zoeira.
 """
 import logging
+import re
 import time
 
 import requests
@@ -99,6 +100,15 @@ def build_embed(match_id, ctx=None):
     return embed
 
 
+_WEBHOOK_TOKEN = re.compile(r"(webhooks/\d+/)[\w.-]+")
+
+
+def _redact(text):
+    """Tira o token do webhook de mensagens de erro: o requests põe a URL
+    inteira na exceção, e o log do GitHub Actions deste repo é público."""
+    return _WEBHOOK_TOKEN.sub(r"\1***", str(text))
+
+
 def post_webhook(url, embed):
     """POST no webhook (wait=true devolve a mensagem). (channel_id, message_id) ou None."""
     sep = "&" if "?" in url else "?"
@@ -106,10 +116,10 @@ def post_webhook(url, embed):
         r = requests.post(f"{url}{sep}wait=true", timeout=20,
                           json={"username": "X9", "embeds": [embed]})
     except requests.RequestException as e:
-        logger.warning("Webhook falhou: %s", e)
+        logger.warning("Webhook falhou: %s", _redact(e))
         return None
     if r.status_code >= 300:
-        logger.warning("Webhook HTTP %s: %s", r.status_code, r.text[:300])
+        logger.warning("Webhook HTTP %s: %s", r.status_code, _redact(r.text[:300]))
         return None
     body = r.json()
     return str(body.get("channel_id")), str(body.get("id"))
@@ -126,10 +136,10 @@ def edit_webhook(url, message_id, embed):
         r = requests.patch(_webhook_message_url(url, message_id), timeout=20,
                            json={"embeds": [embed]})
     except requests.RequestException as e:
-        logger.warning("Edição do webhook falhou: %s", e)
+        logger.warning("Edição do webhook falhou: %s", _redact(e))
         return False
     if r.status_code >= 300:
-        logger.warning("Edição do webhook HTTP %s: %s", r.status_code, r.text[:200])
+        logger.warning("Edição do webhook HTTP %s: %s", r.status_code, _redact(r.text[:200]))
         return False
     return True
 
