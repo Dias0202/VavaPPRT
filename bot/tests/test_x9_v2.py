@@ -518,3 +518,9 @@ async def test_resenha_so_com_partidas_da_sessao(backend, monkeypatch):
     assert await brain.night_recap(since=10_500) == "resenha"
     night["partidas"] = 1
     assert await brain.night_recap(since=10_500) is None      # uma partida não é noite
+
+
+def test_config_do_bot_limpa_bom(monkeypatch):
+    from x9 import config
+    monkeypatch.setenv("X9_TESTE_TOKEN", "﻿abc ")
+    assert config._env("X9_TESTE_TOKEN") == "abc"

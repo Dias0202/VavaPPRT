@@ -10,20 +10,30 @@ REPO_DIR = BOT_DIR.parent
 load_dotenv(BOT_DIR / ".env")
 
 
+def _env(name, default=""):
+    """Variável de ambiente sem espaços nem caracteres invisíveis nas pontas.
+
+    `.strip()` não tira o BOM (U+FEFF): um secret colado de um arquivo salvo
+    como "UTF-8 com BOM" (padrão de alguns editores no Windows) virava
+    "\ufeffhttps://…" e o requests recusava a URL — o webhook do placar
+    falhou assim, em silêncio, por dias."""
+    return (os.getenv(name, default) or "").strip().strip("\ufeff\u200b\u200c\u200d\u2060").strip()
+
+
 def _int(name, default=None):
-    v = os.getenv(name, "").strip()
+    v = _env(name)
     return int(v) if v.isdigit() else default
 
 
 def _float(name, default):
     try:
-        return float(os.getenv(name, "").strip() or default)
+        return float(_env(name) or default)
     except ValueError:
         return default
 
 
 def _flag(name, default=True):
-    v = os.getenv(name, "").strip()
+    v = _env(name)
     return default if not v else v not in ("0", "false", "no", "nao", "não")
 
 
@@ -31,20 +41,20 @@ def _list(name, default):
     return [x.strip() for x in (os.getenv(name, "") or default).split(",") if x.strip()]
 
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+DISCORD_TOKEN = _env("DISCORD_TOKEN", "")
 # Servidores do grupo (vírgula-separados). Os /comandos são globais; aqui o
 # bot só limpa cópias antigas por servidor, que apareceriam duplicadas.
 DISCORD_GUILD_IDS = [int(x) for x in os.getenv("DISCORD_GUILD_ID", "").replace(" ", "").split(",")
                      if x.isdigit()]
 ANNOUNCE_CHANNEL_ID = _int("ANNOUNCE_CHANNEL_ID")    # canal do placar
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+GEMINI_API_KEY = _env("GEMINI_API_KEY", "")
+GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-2.5-flash")
+GROQ_API_KEY = _env("GROQ_API_KEY", "")
+GROQ_MODEL = _env("GROQ_MODEL", "openai/gpt-oss-120b")
 # Cota por minuto (TPM) do free tier é por modelo: quando o principal estoura,
 # o reserva responde na hora em vez de o bot esperar o minuto virar. Vazio desliga.
-GROQ_FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b").strip()
+GROQ_FALLBACK_MODEL = _env("GROQ_FALLBACK_MODEL", "openai/gpt-oss-20b")
 # Rotas: ordem dos provedores por tarefa (gemini | groq | groq-small). A voz
 # prefere o Groq (latência menor); a fofoca, o Gemini com um pouco de "pensar".
 LLM_ORDER_TEXT = _list("LLM_ORDER_TEXT", "gemini,groq,groq-small")
@@ -52,16 +62,16 @@ LLM_ORDER_VOICE = _list("LLM_ORDER_VOICE", "groq,groq-small,gemini")
 LLM_ORDER_GOSSIP = _list("LLM_ORDER_GOSSIP", "gemini,groq,groq-small")
 GEMINI_GOSSIP_THINKING = _int("GEMINI_GOSSIP_THINKING", 512)
 
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small").strip()
-WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto").strip()
+WHISPER_MODEL = _env("WHISPER_MODEL", "small")
+WHISPER_DEVICE = _env("WHISPER_DEVICE", "auto")
 # Vazio = float16 na GPU, int8 na CPU. Para large-v3-turbo numa GPU de 4 GB: int8_float16.
-WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE", "").strip() or None
+WHISPER_COMPUTE = _env("WHISPER_COMPUTE", "") or None
 VOICE_SILENCE_S = _float("VOICE_SILENCE_S", 0.55)
 # Wake antecipado (amostra do começo da fala): auto = só com GPU.
-VOICE_EARLY_WAKE = os.getenv("VOICE_EARLY_WAKE", "auto").strip()
-TTS_ENGINE = os.getenv("TTS_ENGINE", "auto").strip()          # auto | edge | piper
-TTS_VOICE = os.getenv("TTS_VOICE", "pt-BR-AntonioNeural").strip()  # voz do edge-tts
-PIPER_VOICE = os.getenv("PIPER_VOICE", "pt_BR-faber-medium").strip()
+VOICE_EARLY_WAKE = _env("VOICE_EARLY_WAKE", "auto")
+TTS_ENGINE = _env("TTS_ENGINE", "auto")          # auto | edge | piper
+TTS_VOICE = _env("TTS_VOICE", "pt-BR-AntonioNeural")  # voz do edge-tts
+PIPER_VOICE = _env("PIPER_VOICE", "pt_BR-faber-medium")
 
 MEMORY_TURNS = _int("MEMORY_TURNS", 10)
 MEMORY_TTL_S = _int("MEMORY_TTL_S", 900)
@@ -70,11 +80,11 @@ GOSSIP_MAX_AGE_H = _int("GOSSIP_MAX_AGE_H", 48)
 # Partida sem dono depois de N min do início: o poller não anunciou (webhook
 # desligado ou fora do ar) e o bot posta o placar ele mesmo.
 BOT_CLAIM_AFTER_MIN = _int("BOT_CLAIM_AFTER_MIN", 80)
-BOT_POSTS_SCOREBOARD = os.getenv("BOT_POSTS_SCOREBOARD", "1").strip() != "0"
+BOT_POSTS_SCOREBOARD = _env("BOT_POSTS_SCOREBOARD", "1") != "0"
 
 # Ao vivo: presença do Discord + checagens rápidas na HenrikDev (x9/live.py).
 # Precisa de Presence Intent e Server Members Intent ligados no Developer Portal.
-LIVE_ENABLED = os.getenv("LIVE_ENABLED", "1").strip() != "0"
+LIVE_ENABLED = _env("LIVE_ENABLED", "1") != "0"
 LIVE_BASE_EVERY_S = _int("LIVE_BASE_EVERY_S", 300)       # varredura de todos
 LIVE_PLAYING_EVERY_S = _int("LIVE_PLAYING_EVERY_S", 60)   # quem está jogando
 LIVE_MIN_GAP_S = _float("LIVE_MIN_GAP_S", 5)              # 1 consulta a cada N s, no máximo

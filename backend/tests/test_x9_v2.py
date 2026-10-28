@@ -344,3 +344,30 @@ def test_checagem_leve_pede_poucas_partidas(roster, clean_db):
                   if any(p["puuid"] == ADMIN_PUUID for p in m["players"])),
                  key=lambda m: m["metadata"]["started_at"])
     assert got == [newest["metadata"]["match_id"]]
+
+
+# ---------------------------------------------------------------------------
+# Secrets com BOM e token do webhook fora do log
+# ---------------------------------------------------------------------------
+def test_secret_com_bom_e_espacos_e_limpo(monkeypatch):
+    from app import config
+    monkeypatch.setenv("X9_TESTE_URL", "﻿  https://discord.test/api/webhooks/1/tok ​\n")
+    assert config._env("X9_TESTE_URL") == "https://discord.test/api/webhooks/1/tok"
+    monkeypatch.delenv("X9_TESTE_URL")
+    assert config._env("X9_TESTE_URL", "padrao") == "padrao"
+
+
+def test_token_do_webhook_nao_vaza_no_log(monkeypatch, caplog):
+    import requests
+
+    from app import announce
+    url = "﻿https://discord.com/api/webhooks/123456/SEGREDO-do_token.x"
+
+    def boom(*a, **k):  # o requests põe a URL inteira na exceção
+        raise requests.exceptions.InvalidSchema(f"No connection adapters were found for {url!r}")
+    monkeypatch.setattr(announce.requests, "post", boom)
+    monkeypatch.setattr(announce.requests, "patch", boom)
+    with caplog.at_level("WARNING"):
+        assert announce.post_webhook(url, {}) is None
+        assert announce.edit_webhook(url, "9", {}) is False
+    assert "SEGREDO" not in caplog.text and "webhooks/123456/***" in caplog.text
