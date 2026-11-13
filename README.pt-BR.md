@@ -1,5 +1,7 @@
 # VavaPPRT — Plataforma de Análise de Desempenho (Valorant)
 
+[English](README.md) · **Português**
+
 Plataforma web fechada para um grupo de amigos analisar desempenho no Valorant:
 **onde cada um erra e acerta, como os grupos jogam bem, em quais mapas e quais
 combinações de jogadores rendem** — atualizado automaticamente a cada partida.
@@ -177,3 +179,7 @@ e runbook de "o site não carrega" em **[docs/DEPLOY_WEB.md](docs/DEPLOY_WEB.md)
 Análise exibida só para membros do grupo (consentidos). Dados de adversários
 entram apenas de forma agregada (contexto de rank), nunca como perfil navegável —
 em linha com a política da Riot contra *scouting* não consentido.
+
+## Licença
+
+[MIT](LICENSE).
