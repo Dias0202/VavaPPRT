@@ -30,3 +30,6 @@ _api_dump/
 bot/.env
 bot/models/
 bot/logs/
+
+# Local assistant tooling
+.agents/
