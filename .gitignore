@@ -33,3 +33,4 @@ bot/logs/
 
 # Local assistant tooling
 .agents/
+skills-lock.json
